@@ -1,5 +1,6 @@
 .DS_Store
 .venv/
+.ruff_cache/
 cvs/
 screening_report.md
 screening_results.csv
