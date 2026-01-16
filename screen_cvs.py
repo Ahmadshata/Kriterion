@@ -10,7 +10,6 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import fitz  # PyMuPDF
 
 
-
 # --- EXCLUSION: use word-boundary regex (avoid "certification" false positives) ---
 EXCLUDE_PATTERNS = [
     re.compile(r"\biti\b", re.IGNORECASE),
@@ -23,39 +22,87 @@ EXCLUDE_PATTERNS = [
 
 
 DEVOPS_KEYWORDS = {
-    "devops", "sre", "site reliability",
-    "platform engineer", "platform engineering",
-    "infrastructure", "cloud engineer", "cloud engineering",
-    "kubernetes", "terraform", "terragrunt",
-    "ci/cd", "cicd", "jenkins", "github actions",
-    "helm", "eks", "docker", "ansible",
-    "prometheus", "grafana", "argo", "argo cd", "gitops",
-    "linux", "iac", "infrastructure as code", "cloudformation",
+    "devops",
+    "sre",
+    "site reliability",
+    "platform engineer",
+    "platform engineering",
+    "infrastructure",
+    "cloud engineer",
+    "cloud engineering",
+    "kubernetes",
+    "terraform",
+    "terragrunt",
+    "ci/cd",
+    "cicd",
+    "jenkins",
+    "github actions",
+    "helm",
+    "eks",
+    "docker",
+    "ansible",
+    "prometheus",
+    "grafana",
+    "argo",
+    "argo cd",
+    "gitops",
+    "linux",
+    "iac",
+    "infrastructure as code",
+    "cloudformation",
 }
 
 # Stop building job entries when we hit these (conservative)
 ENTRY_STOP_HEADINGS = {"languages", "volunteering", "education"}
 
-EDUCATION_HINTS = {"bachelor", "master", "masters", "degree", "faculty", "university", "education"}
+EDUCATION_HINTS = {
+    "bachelor",
+    "master",
+    "masters",
+    "degree",
+    "faculty",
+    "university",
+    "education",
+}
 
 JOB_TITLE_HINTS = {
-    "engineer", "developer", "administrator", "architect", "consultant",
-    "specialist", "lead", "manager", "intern", "head",
+    "engineer",
+    "developer",
+    "administrator",
+    "architect",
+    "consultant",
+    "specialist",
+    "lead",
+    "manager",
+    "intern",
+    "head",
 }
 
 MONTHS = {
-    "jan": 1, "january": 1,
-    "feb": 2, "february": 2,
-    "mar": 3, "march": 3,
-    "apr": 4, "april": 4,
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
     "may": 5,
-    "jun": 6, "june": 6,
-    "jul": 7, "july": 7,
-    "aug": 8, "august": 8,
-    "sep": 9, "sept": 9, "september": 9,
-    "oct": 10, "october": 10,
-    "nov": 11, "november": 11,
-    "dec": 12, "december": 12,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
 }
 
 # Matches: "Feb 2024 - Present", "08/2021 - 05/2023", "2019 - 2025", etc.
@@ -204,7 +251,9 @@ def build_date_based_entries(pages: Sequence[str]) -> List[Entry]:
     return [e for e in entries if e.text()]
 
 
-def find_keyword_in_entries(entries: List[Entry], keyword: str) -> Optional[Tuple[int, str]]:
+def find_keyword_in_entries(
+    entries: List[Entry], keyword: str
+) -> Optional[Tuple[int, str]]:
     pattern = re.compile(re.escape(keyword), re.IGNORECASE)
     for entry in entries:
         for idx, (page_num, line) in enumerate(entry.lines):
@@ -291,7 +340,9 @@ def compute_devops_roles(entries: List[Entry]) -> Tuple[List[Role], int, bool]:
             if month not in total_months:
                 total_months.add(month)
                 added += 1
-        roles.append(Role(title=entry.head(2), start=start, end=end, months_added=added))
+        roles.append(
+            Role(title=entry.head(2), start=start, end=end, months_added=added)
+        )
         ambiguity = ambiguity or amb
 
     return roles, len(total_months), ambiguity
@@ -336,13 +387,20 @@ def screen_pdf(pdf_path: Path) -> Dict[str, object]:
         "ambiguity": ambiguity,
         "devops_pass": devops_pass,
     }
+
+
 def write_csv(results: List[Dict[str, object]], output_path: Path) -> None:
     fields = [
-        "file", "passed",
-        "kubernetes_found", "kubernetes_page",
-        "aws_found", "aws_page",
-        "devops_months", "devops_pass",
-        "date_ambiguity", "used_ocr",
+        "file",
+        "passed",
+        "kubernetes_found",
+        "kubernetes_page",
+        "aws_found",
+        "aws_page",
+        "devops_months",
+        "devops_pass",
+        "date_ambiguity",
+        "used_ocr",
     ]
     with output_path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
@@ -387,26 +445,36 @@ def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
             lines.append("- Note: OCR fallback used for text extraction.")
 
         if r["kubernetes_found"]:
-            lines.append(f"- Kubernetes in Experience: Yes (page {r['kubernetes_page']})")
-            lines.append("  Snippet:\n\n  " + str(r["kubernetes_snippet"]).replace("\n", "\n  "))
+            lines.append(
+                f"- Kubernetes in Experience: Yes (page {r['kubernetes_page']})"
+            )
+            lines.append(
+                "  Snippet:\n\n  " + str(r["kubernetes_snippet"]).replace("\n", "\n  ")
+            )
         else:
             lines.append("- Kubernetes in Experience: No")
 
         if r["aws_found"]:
             lines.append(f"- AWS in Experience: Yes (page {r['aws_page']})")
-            lines.append("  Snippet:\n\n  " + str(r["aws_snippet"]).replace("\n", "\n  "))
+            lines.append(
+                "  Snippet:\n\n  " + str(r["aws_snippet"]).replace("\n", "\n  ")
+            )
         else:
             lines.append("- AWS in Experience: No")
 
         lines.append(f"- DevOps months counted (conservative): {r['devops_months']}")
-        lines.append(f"- DevOps pass (>= 36 months): {'Yes' if r['devops_pass'] else 'No'}")
+        lines.append(
+            f"- DevOps pass (>= 36 months): {'Yes' if r['devops_pass'] else 'No'}"
+        )
         lines.append(f"- Date ambiguity: {'Yes' if r['ambiguity'] else 'No'}")
 
         roles: List[Role] = r["devops_roles"]  # type: ignore
         if roles:
             lines.append("- DevOps roles counted:")
             for role in roles:
-                lines.append(f"  - {role.title} ({format_date(role.start)} to {format_date(role.end)}): {role.months_added} months")
+                lines.append(
+                    f"  - {role.title} ({format_date(role.start)} to {format_date(role.end)}): {role.months_added} months"
+                )
         else:
             lines.append("- DevOps roles counted: None")
 
@@ -422,9 +490,15 @@ def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
 
     output_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Screen CV PDFs for DevOps requirements.")
-    p.add_argument("folder", nargs="?", default="./cvs", help="Folder containing PDF CVs (default: ./cvs)")
+    p.add_argument(
+        "folder",
+        nargs="?",
+        default="./cvs",
+        help="Folder containing PDF CVs (default: ./cvs)",
+    )
     args = p.parse_args()
 
     folder = Path(args.folder).resolve()
