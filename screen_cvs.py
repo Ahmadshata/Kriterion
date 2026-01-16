@@ -142,13 +142,65 @@ MONTHS = {
     "december": 12,
 }
 
+# If True: year-only tokens (e.g., "2022") are marked ambiguous.
+# If False: year-only ranges are treated as Jan->Dec bounds and are NOT ambiguous.
+YEAR_ONLY_TOKENS_ARE_AMBIGUOUS: bool = False
+
 DATE_RANGE_PATTERN = re.compile(
     r"(?P<start>(?:[A-Za-z]{3,9}\s+\d{4})|(?:\d{1,2}[/-]\d{4})|(?:\d{4}))\s*"
-    r"(?:-|–|—|to)\s*"
+    r"(?:-|–|—|to|until|till)\s*"
     r"(?P<end>(?:[A-Za-z]{3,9}\s+\d{4})|(?:\d{1,2}[/-]\d{4})|(?:\d{4})|"
     r"(?:present|current|now))",
     re.IGNORECASE,
 )
+
+
+# -----------------------------
+# Date normalization (edge cases)
+# -----------------------------
+
+def normalize_date_text(text: str) -> str:
+    """
+    Normalize common CV date formats so DATE_RANGE_PATTERN can parse them reliably.
+
+    Examples handled:
+    - "Apr, 2024"      -> "Apr 2024"
+    - "Mar-2024"       -> "Mar 2024"
+    - "Mar-2024- Present" -> "Mar 2024 - Present" (effectively)
+    - "2023- till Now" -> "2023 - now"
+    - "Nov 2024 - until now" -> "Nov 2024 - now"
+    - "since 2021"     -> "2021 - now"
+
+    This normalization is used ONLY for date detection/parsing, not for keyword snippets.
+    """
+    t = text
+
+    # Normalize unicode dashes to a plain dash
+    t = t.replace("–", "-").replace("—", "-")
+
+    # Normalize "until/till now|present|current" -> "now"
+    t = re.sub(r"(?i)\b(?:until|till)\s+(?:now|present|current)\b", "now", t)
+
+    # Normalize cases like "2023- till Now" -> "2023 - now"
+    t = re.sub(r"(?i)\b-\s*(?:until|till)\s+(?:now|present|current)\b", "- now", t)
+
+    # Normalize "since <date>" -> "<date> - now"
+    t = re.sub(
+        r"(?i)\bsince\s+((?:[A-Za-z]{3,9}\s*,?\s*\d{4})|(?:\d{1,2}[/-]\d{4})|(?:\d{4}))\b",
+        r"\1 - now",
+        t,
+    )
+
+    # Normalize "Apr, 2024" -> "Apr 2024"
+    t = re.sub(r"(?i)\b([A-Za-z]{3,9})\s*,\s*(\d{4})\b", r"\1 \2", t)
+
+    # Normalize "Mar-2024" or "Mar/2024" -> "Mar 2024"
+    t = re.sub(r"(?i)\b([A-Za-z]{3,9})\s*[-/]\s*(\d{4})\b", r"\1 \2", t)
+
+    # Collapse whitespace (including newlines) to stabilize parsing across PDF extraction quirks
+    t = re.sub(r"\s+", " ", t).strip()
+
+    return t
 
 
 # -----------------------------
@@ -299,15 +351,19 @@ def split_entries_from_lines(experience_lines: List[Tuple[int, str]]) -> List[En
 
 
 def is_date_range_line(line: str) -> bool:
-    return DATE_RANGE_PATTERN.search(line) is not None
+    # Normalize to catch formats like "Apr, 2024 - Present" or "Mar-2024 - Present"
+    return DATE_RANGE_PATTERN.search(normalize_date_text(line)) is not None
 
 
-def build_date_based_entries(pages: Sequence[str]) -> List[Entry]:
+def build_date_based_entries_from_lines(lines: Sequence[Tuple[int, str]]) -> List[Entry]:
     """
     Create entries that start at date ranges (e.g., "Feb 2024 - Present")
     and continue until the next date range or a stop heading.
+
+    NOTE:
+    This accepts lines directly so we can restrict date-based parsing to the Experience section
+    when an Experience heading is present (prevents training/education date ranges from poisoning ambiguity).
     """
-    lines = list(iter_lines_with_pages(pages))
     entries: List[Entry] = []
     current: List[Tuple[int, str]] = []
     capturing = False
@@ -338,6 +394,15 @@ def build_date_based_entries(pages: Sequence[str]) -> List[Entry]:
     return [e for e in entries if e.text()]
 
 
+def build_date_based_entries(pages: Sequence[str]) -> List[Entry]:
+    """
+    Create entries that start at date ranges (e.g., "Feb 2024 - Present")
+    and continue until the next date range or a stop heading.
+    """
+    lines = list(iter_lines_with_pages(pages))
+    return build_date_based_entries_from_lines(lines)
+
+
 def is_excluded(entry_text: str) -> bool:
     return any(p.search(entry_text) for p in EXCLUDE_PATTERNS)
 
@@ -353,7 +418,8 @@ def is_experience_entry(entry: Entry) -> bool:
     """
     text = entry.text().lower()
 
-    if not DATE_RANGE_PATTERN.search(entry.text()):
+    # Normalize to catch date formats like "Apr, 2024 - Present" / "Mar-2024 - Present"
+    if not DATE_RANGE_PATTERN.search(normalize_date_text(entry.text())):
         return False
 
     if any(h in text for h in EDUCATION_HINTS):
@@ -373,18 +439,25 @@ def extract_experience_entries(pages: Sequence[str]) -> List[Entry]:
     Primary: date-based entries (most robust)
     Fallback: heading-based capture
     """
+    # Prefer Experience-heading capture if available to avoid parsing date ranges from training/education sections
+    heading_lines = capture_experience_by_heading(pages)
+    if heading_lines:
+        date_entries = build_date_based_entries_from_lines(heading_lines)
+        date_entries = [e for e in date_entries if is_experience_entry(e)]
+        if date_entries:
+            return date_entries
+
+        heading_entries = split_entries_from_lines(heading_lines)
+        heading_entries = [e for e in heading_entries if is_experience_entry(e)]
+        return heading_entries
+
+    # If no Experience heading exists, fall back to global date-based parsing
     date_entries = build_date_based_entries(pages)
     date_entries = [e for e in date_entries if is_experience_entry(e)]
     if date_entries:
         return date_entries
 
-    heading_lines = capture_experience_by_heading(pages)
-    if not heading_lines:
-        return []
-
-    heading_entries = split_entries_from_lines(heading_lines)
-    heading_entries = [e for e in heading_entries if is_experience_entry(e)]
-    return heading_entries
+    return []
 
 
 # -----------------------------
@@ -405,17 +478,21 @@ def find_keyword_in_entries(entries: List[Entry], keyword: str) -> Optional[Tupl
 
 
 def parse_month_year(token: str, is_start: bool) -> Tuple[Optional[dt.date], bool]:
-    token = token.strip().lower()
+    # Normalize token (handles commas, Mar-2024, "until now", etc.)
+    token = normalize_date_text(token).strip().lower()
     today = dt.date.today()
+
+    # Strip trailing punctuation frequently introduced by PDF extraction
+    token = token.strip(" .,:;()[]{}")
 
     if token in {"present", "current", "now"}:
         return today, False
 
-    # Year-only: conservative bound
+    # Year-only: treat as Jan/Dec bounds; ambiguity controlled via YEAR_ONLY_TOKENS_ARE_AMBIGUOUS
     if re.fullmatch(r"\d{4}", token):
         year = int(token)
-        month = 12 if is_start else 1
-        return dt.date(year, month, 1), True
+        month = 1 if is_start else 12
+        return dt.date(year, month, 1), YEAR_ONLY_TOKENS_ARE_AMBIGUOUS
 
     if re.fullmatch(r"\d{1,2}[/-]\d{4}", token):
         month_str, year_str = re.split(r"[/-]", token)
@@ -432,7 +509,11 @@ def parse_month_year(token: str, is_start: bool) -> Tuple[Optional[dt.date], boo
 
 def parse_date_ranges(text: str) -> List[Tuple[dt.date, dt.date, bool]]:
     ranges: List[Tuple[dt.date, dt.date, bool]] = []
-    for m in DATE_RANGE_PATTERN.finditer(text):
+
+    # Normalize across line breaks and formatting quirks before regex scanning
+    norm = normalize_date_text(text)
+
+    for m in DATE_RANGE_PATTERN.finditer(norm):
         s_raw, e_raw = m.group("start"), m.group("end")
         s, s_amb = parse_month_year(s_raw, is_start=True)
         e, e_amb = parse_month_year(e_raw, is_start=False)
@@ -845,6 +926,7 @@ def write_excel(results: List[Dict[str, object]], output_path: Path) -> None:
 
     wb.save(output_path)
 
+
 def apply_cli_overrides(min_devops_years: Optional[float], required_keywords: Optional[List[str]]) -> None:
     """
     Apply CLI overrides to the global EASY CONFIG values.
@@ -856,7 +938,6 @@ def apply_cli_overrides(min_devops_years: Optional[float], required_keywords: Op
 
     if required_keywords is not None and len(required_keywords) > 0:
         REQUIRED_EXPERIENCE_KEYWORDS = set(required_keywords)
-
 
 
 # -----------------------------
