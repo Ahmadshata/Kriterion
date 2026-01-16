@@ -15,9 +15,24 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 
-# -----------------------------
-# Config
-# -----------------------------
+# =============================================================================
+# EASY CONFIG (edit these)
+# =============================================================================
+
+# Minimum DevOps experience required (years)
+MIN_DEVOPS_YEARS: float = 3.0
+
+# Required keywords that MUST appear in EXPERIENCE entries (case-insensitive)
+# Example: {"Kubernetes", "AWS"} or {"Kubernetes", "AWS", "Terraform"}
+REQUIRED_EXPERIENCE_KEYWORDS: Set[str] = {"Kubernetes", "AWS", "Helm"}
+
+# How many lines around a match to include in a snippet (1 means +/-1 line)
+SNIPPET_CONTEXT_LINES: int = 1
+
+
+# =============================================================================
+# Other config
+# =============================================================================
 
 EXPERIENCE_HEADINGS = {
     "experience",
@@ -212,7 +227,7 @@ def normalize_heading(line: str) -> str:
 
 
 # -----------------------------
-# Experience extraction (robust)
+# Experience extraction
 # -----------------------------
 
 def capture_experience_by_heading(pages: Sequence[str], max_back_lines: int = 200) -> List[Tuple[int, str]]:
@@ -382,8 +397,8 @@ def find_keyword_in_entries(entries: List[Entry], keyword: str) -> Optional[Tupl
         for idx, (page_num, line) in enumerate(entry.lines):
             if pattern.search(line):
                 lines = [l for _, l in entry.lines]
-                start = max(idx - 1, 0)
-                end = min(idx + 2, len(lines))
+                start = max(idx - SNIPPET_CONTEXT_LINES, 0)
+                end = min(idx + SNIPPET_CONTEXT_LINES + 2, len(lines))
                 snippet = "\n".join(lines[start:end]).strip()
                 return page_num, snippet
     return None
@@ -482,7 +497,7 @@ def months_to_years(months: int) -> float:
 
 
 # -----------------------------
-# Screening + outputs
+# Screening + outputs (DYNAMIC REQUIRED EXPERIENCE)
 # -----------------------------
 
 def classify_bucket(result: Dict[str, object]) -> str:
@@ -504,6 +519,12 @@ def excel_result_label(result: Dict[str, object]) -> str:
     return "AMBIGUOUS" if bool(result.get("ambiguity")) else ("PASS" if bool(result.get("passed")) else "FAIL")
 
 
+def normalize_excel_col_name(keyword: str) -> str:
+    s = keyword.strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+    return s or "keyword"
+
+
 def screen_pdf(pdf_path: Path) -> Dict[str, object]:
     pages, used_ocr = extract_text_by_page(pdf_path)
     exp_entries = extract_experience_entries(pages)
@@ -516,69 +537,100 @@ def screen_pdf(pdf_path: Path) -> Dict[str, object]:
         else:
             filtered_entries.append(e)
 
-    kube_evidence = find_keyword_in_entries(filtered_entries, "Kubernetes")
-    aws_evidence = find_keyword_in_entries(filtered_entries, "AWS")
+    required_evidence: Dict[str, Optional[Tuple[int, str]]] = {
+        kw: find_keyword_in_entries(filtered_entries, kw) for kw in REQUIRED_EXPERIENCE_KEYWORDS
+    }
+    all_required_found = all(ev is not None for ev in required_evidence.values())
 
     roles, devops_months, ambiguity = compute_devops_roles(filtered_entries)
     devops_years = months_to_years(devops_months)
 
-    # Strict interpretation:
-    # - If dates are ambiguous, do NOT allow PASS (it goes to ambiguous bucket).
-    devops_pass = (devops_years >= 3.0) and (not ambiguity)
-    passed = (kube_evidence is not None) and (aws_evidence is not None) and devops_pass
+    devops_pass = (devops_years >= MIN_DEVOPS_YEARS) and (not ambiguity)
+    passed = all_required_found and devops_pass
+
+    flattened: Dict[str, object] = {}
+    for kw in sorted(REQUIRED_EXPERIENCE_KEYWORDS):
+        col = normalize_excel_col_name(kw)
+        ev = required_evidence.get(kw)
+        flattened[f"kw_found__{col}"] = ev is not None
+        flattened[f"kw_page__{col}"] = ev[0] if ev else None
+        flattened[f"kw_snippet__{col}"] = ev[1] if ev else ""
+
+    # IMPORTANT: always set this as an int (never None)
+    experience_entries_found = int(len(filtered_entries))
 
     return {
         "file": pdf_path.name,
         "passed": passed,
-        "kubernetes_found": kube_evidence is not None,
-        "kubernetes_page": kube_evidence[0] if kube_evidence else None,
-        "kubernetes_snippet": kube_evidence[1] if kube_evidence else "",
-        "aws_found": aws_evidence is not None,
-        "aws_page": aws_evidence[0] if aws_evidence else None,
-        "aws_snippet": aws_evidence[1] if aws_evidence else "",
-        "devops_years": devops_years,
+        "required_evidence": required_evidence,
+        "devops_years": float(devops_years),
         "devops_roles": roles,
         "excluded_entries": excluded_entries,
         "used_ocr": used_ocr,
         "ambiguity": ambiguity,
         "devops_pass": devops_pass,
-        "experience_entries_found": len(filtered_entries),
+        "experience_entries_found": experience_entries_found,
+        **flattened,
     }
 
 
+def build_dynamic_headers() -> List[str]:
+    headers: List[str] = ["file", "result"]
+    for kw in sorted(REQUIRED_EXPERIENCE_KEYWORDS):
+        base = normalize_excel_col_name(kw)
+        headers.extend([f"{base}_found", f"{base}_page", f"{base}_snippet"])
+    headers.extend(
+        [
+            "devops_years",
+            "devops_pass",
+            "date_ambiguity",
+            "used_ocr",
+        ]
+    )
+    return headers
+
+
+def row_for_result(r: Dict[str, object], headers: List[str]) -> List[object]:
+    row: List[object] = []
+    result_label = excel_result_label(r)
+
+    for h in headers:
+        if h == "file":
+            row.append(r.get("file"))
+        elif h == "result":
+            row.append(result_label)
+        elif h.endswith("_found") and h not in {"devops_pass"}:
+            key = f"kw_found__{h[:-6]}"
+            row.append(bool(r.get(key, False)))
+        elif h.endswith("_page"):
+            key = f"kw_page__{h[:-5]}"
+            row.append(r.get(key))
+        elif h.endswith("_snippet"):
+            key = f"kw_snippet__{h[:-8]}"
+            row.append(r.get(key, ""))
+        elif h == "devops_years":
+            row.append(r.get("devops_years"))
+        elif h == "devops_pass":
+            row.append(bool(r.get("devops_pass", False)))
+        elif h == "date_ambiguity":
+            row.append(bool(r.get("ambiguity", False)))
+        elif h == "used_ocr":
+            row.append(bool(r.get("used_ocr", False)))
+        elif h == "experience_entries_found":
+            # FIX: never write None; default to 0
+            row.append(int(r.get("experience_entries_found", 0)))
+        else:
+            row.append(r.get(h))
+    return row
+
+
 def write_csv(results: List[Dict[str, object]], output_path: Path) -> None:
-    fields = [
-        "file",
-        "result",
-        "kubernetes_found",
-        "kubernetes_page",
-        "aws_found",
-        "aws_page",
-        "devops_years",
-        "devops_pass",
-        "date_ambiguity",
-        "used_ocr",
-        "experience_entries_found",
-    ]
+    headers = build_dynamic_headers()
     with output_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader()
+        w = csv.writer(f)
+        w.writerow(headers)
         for r in results:
-            w.writerow(
-                {
-                    "file": r["file"],
-                    "result": excel_result_label(r),
-                    "kubernetes_found": r["kubernetes_found"],
-                    "kubernetes_page": r["kubernetes_page"],
-                    "aws_found": r["aws_found"],
-                    "aws_page": r["aws_page"],
-                    "devops_years": r["devops_years"],
-                    "devops_pass": r["devops_pass"],
-                    "date_ambiguity": r["ambiguity"],
-                    "used_ocr": r["used_ocr"],
-                    "experience_entries_found": r["experience_entries_found"],
-                }
-            )
+            w.writerow(row_for_result(r, headers))
 
 
 def format_date(d: dt.date) -> str:
@@ -599,27 +651,30 @@ def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
     lines.append(f"- Failed: {failed}")
     lines.append(f"- Ambiguous: {ambiguous}\n")
 
+    lines.append("## Active Screening Criteria")
+    lines.append(f"- Required keywords in Experience: {', '.join(sorted(REQUIRED_EXPERIENCE_KEYWORDS))}")
+    lines.append(f"- Minimum DevOps experience: {MIN_DEVOPS_YEARS} years\n")
+
     for r in results:
         lines.append(f"## {r['file']}")
         lines.append(f"- Result: {excel_result_label(r)}")
         if r["used_ocr"]:
             lines.append("- Note: OCR fallback used for text extraction.")
 
-        if r["kubernetes_found"]:
-            lines.append(f"- Kubernetes in Experience: Yes (page {r['kubernetes_page']})")
-            lines.append("  Snippet:\n\n  " + str(r["kubernetes_snippet"]).replace("\n", "\n  "))
-        else:
-            lines.append("- Kubernetes in Experience: No")
+        required_evidence: Dict[str, Optional[Tuple[int, str]]] = r["required_evidence"]  # type: ignore
+        lines.append("- Required keywords evidence (Experience):")
+        for kw in sorted(REQUIRED_EXPERIENCE_KEYWORDS):
+            ev = required_evidence.get(kw)
+            if ev:
+                lines.append(f"  - {kw}: Yes (page {ev[0]})")
+                lines.append("    Snippet:\n\n    " + ev[1].replace("\n", "\n    "))
+            else:
+                lines.append(f"  - {kw}: No")
 
-        if r["aws_found"]:
-            lines.append(f"- AWS in Experience: Yes (page {r['aws_page']})")
-            lines.append("  Snippet:\n\n  " + str(r["aws_snippet"]).replace("\n", "\n  "))
-        else:
-            lines.append("- AWS in Experience: No")
-
-        lines.append(f"- Experience entries found (after exclusion): {r['experience_entries_found']}")
         lines.append(f"- DevOps years counted (unique, overlap-safe): {r['devops_years']}")
-        lines.append(f"- DevOps pass (>= 3 years AND no ambiguity): {'Yes' if r['devops_pass'] else 'No'}")
+        lines.append(
+            f"- DevOps pass (>= {MIN_DEVOPS_YEARS} years AND no ambiguity): {'Yes' if r['devops_pass'] else 'No'}"
+        )
         lines.append(f"- Date ambiguity: {'Yes' if r['ambiguity'] else 'No'}")
 
         roles: List[Role] = r["devops_roles"]  # type: ignore
@@ -697,12 +752,12 @@ def distribute_pdfs(results: List[Dict[str, object]], input_folder: Path, output
         if already_distributed(filename, bucket_dirs):
             continue
 
-        bucket = classify_bucket(r)  # passed / failed / ambiguous
+        bucket = classify_bucket(r)
         copy_if_absent(pdf_path, bucket_dirs[bucket])
 
 
 # -----------------------------
-# Excel output (formatted + colored Result)
+# Excel output (formatted + colored Result) — DYNAMIC
 # -----------------------------
 
 def write_excel(results: List[Dict[str, object]], output_path: Path) -> None:
@@ -710,43 +765,12 @@ def write_excel(results: List[Dict[str, object]], output_path: Path) -> None:
     ws = wb.active
     ws.title = "Screening Results"
 
-    headers = [
-        "file",
-        "result",
-        "kubernetes_found",
-        "kubernetes_page",
-        "kubernetes_snippet",
-        "aws_found",
-        "aws_page",
-        "aws_snippet",
-        "devops_years",
-        "devops_pass",
-        "date_ambiguity",
-        "used_ocr",
-        "experience_entries_found",
-    ]
+    headers = build_dynamic_headers()
     ws.append(headers)
 
     for r in results:
-        ws.append(
-            [
-                r.get("file"),
-                excel_result_label(r),  # PASS / FAIL / AMBIGUOUS
-                r.get("kubernetes_found"),
-                r.get("kubernetes_page"),
-                r.get("kubernetes_snippet", ""),
-                r.get("aws_found"),
-                r.get("aws_page"),
-                r.get("aws_snippet", ""),
-                r.get("devops_years"),
-                r.get("devops_pass"),
-                r.get("ambiguity"),
-                r.get("used_ocr"),
-                r.get("experience_entries_found"),
-            ]
-        )
+        ws.append(row_for_result(r, headers))
 
-    # Formatting basics
     header_font = Font(bold=True)
     top = Alignment(vertical="top")
     wrap_top = Alignment(wrap_text=True, vertical="top")
@@ -757,28 +781,25 @@ def write_excel(results: List[Dict[str, object]], output_path: Path) -> None:
         cell.alignment = top
 
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
+
+    # Explicit filter range (prevents odd extra-column behavior in some cases)
+    last_col = get_column_letter(len(headers))
+    ws.auto_filter.ref = f"A1:{last_col}{ws.max_row}"
 
     header_to_col = {headers[i]: i + 1 for i in range(len(headers))}
 
-    # Wrap snippets + align all cells top
-    snippet_cols = {"kubernetes_snippet", "aws_snippet"}
+    snippet_cols = [h for h in headers if h.endswith("_snippet")]
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for c in row:
             c.alignment = top
-        for name in snippet_cols:
-            col_idx = header_to_col[name]
+        for h in snippet_cols:
+            col_idx = header_to_col[h]
             row[col_idx - 1].alignment = wrap_top
 
-    # Color the "result" cell:
-    # - FAIL: red fill, white text
-    # - PASS: green fill, white text
-    # - AMBIGUOUS: orange fill, white text
     result_col = header_to_col["result"]
-
-    fill_pass = PatternFill(fill_type="solid", fgColor="00A000")   # green
-    fill_fail = PatternFill(fill_type="solid", fgColor="C00000")   # red
-    fill_amb  = PatternFill(fill_type="solid", fgColor="F39C12")   # orange
+    fill_pass = PatternFill(fill_type="solid", fgColor="00A000")
+    fill_fail = PatternFill(fill_type="solid", fgColor="C00000")
+    fill_amb = PatternFill(fill_type="solid", fgColor="F39C12")
     font_white = Font(color="FFFFFF", bold=True)
 
     for rr in range(2, ws.max_row + 1):
@@ -793,16 +814,15 @@ def write_excel(results: List[Dict[str, object]], output_path: Path) -> None:
         elif val == "AMBIGUOUS":
             cell.fill = fill_amb
             cell.font = font_white
-
         cell.alignment = Alignment(horizontal="center", vertical="top")
 
     # Column widths (auto-ish, with caps)
     caps = {h: 45 for h in headers}
     caps["file"] = 55
     caps["result"] = 14
-    caps["kubernetes_snippet"] = 80
-    caps["aws_snippet"] = 80
     caps["devops_years"] = 14
+    for h in snippet_cols:
+        caps[h] = 80
 
     for col_idx, h in enumerate(headers, start=1):
         longest = len(h)
@@ -810,21 +830,18 @@ def write_excel(results: List[Dict[str, object]], output_path: Path) -> None:
             v = ws.cell(row=rr, column=col_idx).value
             if v is None:
                 continue
-            s = str(v)
-            longest = max(longest, len(s))
-        width = min(caps.get(h, 45), max(10, longest + 2))
-        ws.column_dimensions[get_column_letter(col_idx)].width = width
+            longest = max(longest, len(str(v)))
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(caps.get(h, 45), max(10, longest + 2))
 
-    # Row heights: increase when snippets are long
-    kube_col = header_to_col["kubernetes_snippet"]
-    aws_col = header_to_col["aws_snippet"]
+    snippet_col_indices = [header_to_col[h] for h in snippet_cols]
     for rr in range(2, ws.max_row + 1):
-        kube_snip = ws.cell(row=rr, column=kube_col).value or ""
-        aws_snip = ws.cell(row=rr, column=aws_col).value or ""
-        if len(str(kube_snip)) > 80 or len(str(aws_snip)) > 80:
-            ws.row_dimensions[rr].height = 70
-        else:
-            ws.row_dimensions[rr].height = 20
+        long_snip = False
+        for col in snippet_col_indices:
+            val = ws.cell(row=rr, column=col).value or ""
+            if len(str(val)) > 80:
+                long_snip = True
+                break
+        ws.row_dimensions[rr].height = 70 if long_snip else 20
 
     wb.save(output_path)
 
@@ -835,17 +852,8 @@ def write_excel(results: List[Dict[str, object]], output_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Screen CV PDFs for DevOps requirements.")
-    parser.add_argument(
-        "folder",
-        nargs="?",
-        default="./cvs",
-        help="Folder containing PDF CVs (default: ./cvs)",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default=".",
-        help="Where to write outputs + classification folders (default: current directory)",
-    )
+    parser.add_argument("folder", nargs="?", default="./cvs", help="Folder containing PDF CVs (default: ./cvs)")
+    parser.add_argument("--output-dir", default=".", help="Output directory (default: current directory)")
     args = parser.parse_args()
 
     folder = Path(args.folder).resolve()
