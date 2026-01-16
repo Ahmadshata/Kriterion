@@ -10,6 +10,18 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import fitz  # PyMuPDF
 
 
+
+# --- EXCLUSION: use word-boundary regex (avoid "certification" false positives) ---
+EXCLUDE_PATTERNS = [
+    re.compile(r"\biti\b", re.IGNORECASE),
+    re.compile(r"\bnti\b", re.IGNORECASE),
+    re.compile(r"\bsprints\b", re.IGNORECASE),
+    re.compile(r"\bdepi\b", re.IGNORECASE),
+    re.compile(r"information\s+technology\s+institute", re.IGNORECASE),
+    re.compile(r"national\s+technology\s+institute", re.IGNORECASE),
+]
+
+
 DEVOPS_KEYWORDS = {
     "devops", "sre", "site reliability",
     "platform engineer", "platform engineering",
@@ -124,6 +136,10 @@ def normalize_heading(line: str) -> str:
 
 def is_date_range_line(line: str) -> bool:
     return DATE_RANGE_PATTERN.search(line) is not None
+
+
+def is_excluded(entry_text: str) -> bool:
+    return any(p.search(entry_text) for p in EXCLUDE_PATTERNS)
 
 
 def is_devops_related(entry_text: str) -> bool:
@@ -287,10 +303,13 @@ def screen_pdf(pdf_path: Path) -> Dict[str, object]:
     # Robust experience extraction: date-range driven
     raw_entries = build_date_based_entries(pages)
     exp_entries = [e for e in raw_entries if is_experience_entry(e)]
-
+    excluded_entries: List[str] = []
     filtered_entries: List[Entry] = []
     for e in exp_entries:
-        filtered_entries.append(e)
+        if is_excluded(e.text()):
+            excluded_entries.append(e.head(3))
+        else:
+            filtered_entries.append(e)
 
     kube_evidence = find_keyword_in_entries(filtered_entries, "Kubernetes")
     aws_evidence = find_keyword_in_entries(filtered_entries, "AWS")
@@ -312,11 +331,96 @@ def screen_pdf(pdf_path: Path) -> Dict[str, object]:
         "aws_snippet": aws_evidence[1] if aws_evidence else "",
         "devops_months": devops_months,
         "devops_roles": roles,
+        "excluded_entries": excluded_entries,
         "used_ocr": used_ocr,
         "ambiguity": ambiguity,
         "devops_pass": devops_pass,
     }
+def write_csv(results: List[Dict[str, object]], output_path: Path) -> None:
+    fields = [
+        "file", "passed",
+        "kubernetes_found", "kubernetes_page",
+        "aws_found", "aws_page",
+        "devops_months", "devops_pass",
+        "date_ambiguity", "used_ocr",
+    ]
+    with output_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for r in results:
+            w.writerow(
+                {
+                    "file": r["file"],
+                    "passed": r["passed"],
+                    "kubernetes_found": r["kubernetes_found"],
+                    "kubernetes_page": r["kubernetes_page"],
+                    "aws_found": r["aws_found"],
+                    "aws_page": r["aws_page"],
+                    "devops_months": r["devops_months"],
+                    "devops_pass": r["devops_pass"],
+                    "date_ambiguity": r["ambiguity"],
+                    "used_ocr": r["used_ocr"],
+                }
+            )
 
+
+def format_date(d: dt.date) -> str:
+    return d.strftime("%Y-%m")
+
+
+def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
+    total = len(results)
+    passed = sum(1 for r in results if r["passed"])
+    failed = total - passed
+
+    lines: List[str] = []
+    lines.append("# CV Screening Report\n")
+    lines.append("## Summary")
+    lines.append(f"- Total CVs: {total}")
+    lines.append(f"- Passed: {passed}")
+    lines.append(f"- Failed: {failed}\n")
+
+    for r in results:
+        lines.append(f"## {r['file']}")
+        lines.append(f"- Result: {'PASS' if r['passed'] else 'FAIL'}")
+        if r["used_ocr"]:
+            lines.append("- Note: OCR fallback used for text extraction.")
+
+        if r["kubernetes_found"]:
+            lines.append(f"- Kubernetes in Experience: Yes (page {r['kubernetes_page']})")
+            lines.append("  Snippet:\n\n  " + str(r["kubernetes_snippet"]).replace("\n", "\n  "))
+        else:
+            lines.append("- Kubernetes in Experience: No")
+
+        if r["aws_found"]:
+            lines.append(f"- AWS in Experience: Yes (page {r['aws_page']})")
+            lines.append("  Snippet:\n\n  " + str(r["aws_snippet"]).replace("\n", "\n  "))
+        else:
+            lines.append("- AWS in Experience: No")
+
+        lines.append(f"- DevOps months counted (conservative): {r['devops_months']}")
+        lines.append(f"- DevOps pass (>= 36 months): {'Yes' if r['devops_pass'] else 'No'}")
+        lines.append(f"- Date ambiguity: {'Yes' if r['ambiguity'] else 'No'}")
+
+        roles: List[Role] = r["devops_roles"]  # type: ignore
+        if roles:
+            lines.append("- DevOps roles counted:")
+            for role in roles:
+                lines.append(f"  - {role.title} ({format_date(role.start)} to {format_date(role.end)}): {role.months_added} months")
+        else:
+            lines.append("- DevOps roles counted: None")
+
+        excl: List[str] = r["excluded_entries"]  # type: ignore
+        if excl:
+            lines.append("- Excluded entries (ITI/NTI/Sprints/DEPI):")
+            for e in excl:
+                lines.append(f"  - {e}")
+        else:
+            lines.append("- Excluded entries (ITI/NTI/Sprints/DEPI): None")
+
+        lines.append("")
+
+    output_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Screen CV PDFs for DevOps requirements.")
@@ -327,6 +431,8 @@ def main() -> None:
     pdfs = sorted(folder.glob("*.pdf"))
 
     results: List[Dict[str, object]] = [screen_pdf(pdf) for pdf in pdfs]
+    write_csv(results, Path("screening_results.csv"))
+    write_report(results, Path("screening_report.md"))
 
 
 if __name__ == "__main__":
