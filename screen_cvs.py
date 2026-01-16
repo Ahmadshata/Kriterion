@@ -289,8 +289,8 @@ def is_date_range_line(line: str) -> bool:
 
 def build_date_based_entries(pages: Sequence[str]) -> List[Entry]:
     """
-    More reliable approach: create entries that start at date ranges (e.g., "Feb 2024 - Present")
-    and continue until the next date range or a hard stop heading.
+    Create entries that start at date ranges (e.g., "Feb 2024 - Present")
+    and continue until the next date range or a stop heading.
     """
     lines = list(iter_lines_with_pages(pages))
     entries: List[Entry] = []
@@ -356,7 +356,7 @@ def is_experience_entry(entry: Entry) -> bool:
 def extract_experience_entries(pages: Sequence[str]) -> List[Entry]:
     """
     Primary: date-based entries (most robust)
-    Fallback: heading-based capture (handles some PDFs with non-standard layouts)
+    Fallback: heading-based capture
     """
     date_entries = build_date_based_entries(pages)
     date_entries = [e for e in date_entries if is_experience_entry(e)]
@@ -487,8 +487,8 @@ def months_to_years(months: int) -> float:
 
 def classify_bucket(result: Dict[str, object]) -> str:
     """
-    Folder classification:
-    - ambiguous: ambiguity == True (regardless of pass/fail)
+    Bucket is for folder distribution (not Excel):
+    - ambiguous: ambiguity == True
     - passed: passed == True and not ambiguous
     - failed: otherwise
     """
@@ -567,7 +567,7 @@ def write_csv(results: List[Dict[str, object]], output_path: Path) -> None:
             w.writerow(
                 {
                     "file": r["file"],
-                    "result": excel_result_label(r),  # PASS / FAIL / AMBIGUOUS
+                    "result": excel_result_label(r),
                     "kubernetes_found": r["kubernetes_found"],
                     "kubernetes_page": r["kubernetes_page"],
                     "aws_found": r["aws_found"],
@@ -647,43 +647,58 @@ def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
 
 
 # -----------------------------
-# Folder distribution
+# Folder distribution (IDEMPOTENT)
 # -----------------------------
 
-def safe_copy(src: Path, dst_dir: Path) -> Path:
-    """Copy src into dst_dir. If filename exists, add a numeric suffix."""
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    dst = dst_dir / src.name
-    if not dst.exists():
-        shutil.copy2(src, dst)
-        return dst
-
-    stem, suffix = src.stem, src.suffix
-    for i in range(1, 10_000):
-        candidate = dst_dir / f"{stem} ({i}){suffix}"
-        if not candidate.exists():
-            shutil.copy2(src, candidate)
-            return candidate
-    raise RuntimeError(f"Too many duplicates copying {src.name} into {dst_dir}")
-
-
-def distribute_pdfs(results: List[Dict[str, object]], input_folder: Path, output_root: Path) -> None:
+def ensure_bucket_dirs(output_root: Path) -> Dict[str, Path]:
     passed_dir = output_root / "passed_cvs"
     failed_dir = output_root / "failed_cvs"
     ambiguous_dir = output_root / "ambiguous_cvs"
 
+    passed_dir.mkdir(parents=True, exist_ok=True)
+    failed_dir.mkdir(parents=True, exist_ok=True)
+    ambiguous_dir.mkdir(parents=True, exist_ok=True)
+
+    return {"passed": passed_dir, "failed": failed_dir, "ambiguous": ambiguous_dir}
+
+
+def already_distributed(filename: str, bucket_dirs: Dict[str, Path]) -> bool:
+    """
+    Idempotency rule:
+    If the file name exists in ANY bucket folder, skip distribution entirely.
+    """
+    for d in bucket_dirs.values():
+        if (d / filename).exists():
+            return True
+    return False
+
+
+def copy_if_absent(src: Path, dst_dir: Path) -> None:
+    """
+    Copy only if the destination file does not already exist.
+    No suffixing is performed.
+    """
+    dst = dst_dir / src.name
+    if dst.exists():
+        return
+    shutil.copy2(src, dst)
+
+
+def distribute_pdfs(results: List[Dict[str, object]], input_folder: Path, output_root: Path) -> None:
+    bucket_dirs = ensure_bucket_dirs(output_root)
+
     for r in results:
-        pdf_path = input_folder / str(r["file"])
+        filename = str(r["file"])
+        pdf_path = input_folder / filename
         if not pdf_path.exists():
             continue
 
-        bucket = classify_bucket(r)
-        if bucket == "passed":
-            safe_copy(pdf_path, passed_dir)
-        elif bucket == "failed":
-            safe_copy(pdf_path, failed_dir)
-        else:
-            safe_copy(pdf_path, ambiguous_dir)
+        # Idempotency: if it already exists in any bucket, do nothing (no duplicates).
+        if already_distributed(filename, bucket_dirs):
+            continue
+
+        bucket = classify_bucket(r)  # passed / failed / ambiguous
+        copy_if_absent(pdf_path, bucket_dirs[bucket])
 
 
 # -----------------------------
@@ -845,7 +860,7 @@ def main() -> None:
     write_report(results, outdir / "screening_report.md")
     write_excel(results, outdir / "screening_results.xlsx")
 
-    # Folder distribution
+    # Folder distribution (idempotent)
     distribute_pdfs(results, folder, outdir)
 
 
