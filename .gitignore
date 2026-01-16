@@ -2,5 +2,7 @@
 .venv/
 .ruff_cache/
 cvs/
+*_cv/
 screening_report.md
 screening_results.csv
+screening_results.xlsx
