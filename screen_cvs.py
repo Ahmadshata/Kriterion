@@ -845,16 +845,46 @@ def write_excel(results: List[Dict[str, object]], output_path: Path) -> None:
 
     wb.save(output_path)
 
+def apply_cli_overrides(min_devops_years: Optional[float], required_keywords: Optional[List[str]]) -> None:
+    """
+    Apply CLI overrides to the global EASY CONFIG values.
+    """
+    global MIN_DEVOPS_YEARS, REQUIRED_EXPERIENCE_KEYWORDS
+
+    if min_devops_years is not None:
+        MIN_DEVOPS_YEARS = float(min_devops_years)
+
+    if required_keywords is not None and len(required_keywords) > 0:
+        REQUIRED_EXPERIENCE_KEYWORDS = set(required_keywords)
+
+
 
 # -----------------------------
 # Main
 # -----------------------------
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Screen CV PDFs for DevOps requirements.")
     parser.add_argument("folder", nargs="?", default="./cvs", help="Folder containing PDF CVs (default: ./cvs)")
     parser.add_argument("--output-dir", default=".", help="Output directory (default: current directory)")
+
+    # CLI overrides for EASY CONFIG
+    parser.add_argument(
+        "--min-devops-years",
+        type=float,
+        default=None,
+        help="Override MIN_DEVOPS_YEARS (e.g., 3.0)",
+    )
+    parser.add_argument(
+        "--required-keyword",
+        action="append",
+        default=None,
+        help="Add a required experience keyword (repeatable). Example: --required-keyword Kubernetes --required-keyword AWS",
+    )
+
     args = parser.parse_args()
+
+    # Apply overrides (if any)
+    apply_cli_overrides(args.min_devops_years, args.required_keyword)
 
     folder = Path(args.folder).resolve()
     outdir = Path(args.output_dir).resolve()
