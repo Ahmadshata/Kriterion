@@ -100,7 +100,15 @@ DEVOPS_KEYWORDS = {
     "cloudformation",
 }
 
-EDUCATION_HINTS = {"bachelor", "master", "masters", "degree", "faculty", "university", "education"}
+EDUCATION_HINTS = {
+    "bachelor",
+    "master",
+    "masters",
+    "degree",
+    "faculty",
+    "university",
+    "education",
+}
 
 JOB_TITLE_HINTS = {
     "engineer",
@@ -159,6 +167,7 @@ DATE_RANGE_PATTERN = re.compile(
 # Date normalization (edge cases)
 # -----------------------------
 
+
 def normalize_date_text(text: str) -> str:
     """
     Normalize common CV date formats so DATE_RANGE_PATTERN can parse them reliably.
@@ -207,6 +216,7 @@ def normalize_date_text(text: str) -> str:
 # Data models
 # -----------------------------
 
+
 @dataclass
 class Entry:
     lines: List[Tuple[int, str]]  # (page_number, line)
@@ -236,6 +246,7 @@ class Role:
 # -----------------------------
 # Text extraction
 # -----------------------------
+
 
 def extract_text_by_page(pdf_path: Path) -> Tuple[List[str], bool]:
     doc = fitz.open(pdf_path)
@@ -282,7 +293,10 @@ def normalize_heading(line: str) -> str:
 # Experience extraction
 # -----------------------------
 
-def capture_experience_by_heading(pages: Sequence[str], max_back_lines: int = 200) -> List[Tuple[int, str]]:
+
+def capture_experience_by_heading(
+    pages: Sequence[str], max_back_lines: int = 200
+) -> List[Tuple[int, str]]:
     """
     Heading-based capture, with a backward window to handle PDFs where extracted text order is odd
     (experience content appears before the "WORK EXPERIENCE" line).
@@ -355,7 +369,9 @@ def is_date_range_line(line: str) -> bool:
     return DATE_RANGE_PATTERN.search(normalize_date_text(line)) is not None
 
 
-def build_date_based_entries_from_lines(lines: Sequence[Tuple[int, str]]) -> List[Entry]:
+def build_date_based_entries_from_lines(
+    lines: Sequence[Tuple[int, str]],
+) -> List[Entry]:
     """
     Create entries that start at date ranges (e.g., "Feb 2024 - Present")
     and continue until the next date range or a stop heading.
@@ -464,7 +480,10 @@ def extract_experience_entries(pages: Sequence[str]) -> List[Entry]:
 # Evidence + date math
 # -----------------------------
 
-def find_keyword_in_entries(entries: List[Entry], keyword: str) -> Optional[Tuple[int, str]]:
+
+def find_keyword_in_entries(
+    entries: List[Entry], keyword: str
+) -> Optional[Tuple[int, str]]:
     pattern = re.compile(re.escape(keyword), re.IGNORECASE)
     for entry in entries:
         for idx, (page_num, line) in enumerate(entry.lines):
@@ -566,7 +585,14 @@ def compute_devops_roles(entries: List[Entry]) -> Tuple[List[Role], int, bool]:
             if month not in total_months:
                 total_months.add(month)
                 added += 1
-        roles.append(Role(title=entry.head(2) or "Unknown title", start=start, end=end, months_added=added))
+        roles.append(
+            Role(
+                title=entry.head(2) or "Unknown title",
+                start=start,
+                end=end,
+                months_added=added,
+            )
+        )
         ambiguity = ambiguity or amb
 
     return roles, len(total_months), ambiguity
@@ -580,6 +606,7 @@ def months_to_years(months: int) -> float:
 # -----------------------------
 # Screening + outputs (DYNAMIC REQUIRED EXPERIENCE)
 # -----------------------------
+
 
 def classify_bucket(result: Dict[str, object]) -> str:
     """
@@ -597,7 +624,11 @@ def excel_result_label(result: Dict[str, object]) -> str:
     """
     Value shown in the Excel 'result' cell.
     """
-    return "AMBIGUOUS" if bool(result.get("ambiguity")) else ("PASS" if bool(result.get("passed")) else "FAIL")
+    return (
+        "AMBIGUOUS"
+        if bool(result.get("ambiguity"))
+        else ("PASS" if bool(result.get("passed")) else "FAIL")
+    )
 
 
 def normalize_excel_col_name(keyword: str) -> str:
@@ -619,7 +650,8 @@ def screen_pdf(pdf_path: Path) -> Dict[str, object]:
             filtered_entries.append(e)
 
     required_evidence: Dict[str, Optional[Tuple[int, str]]] = {
-        kw: find_keyword_in_entries(filtered_entries, kw) for kw in REQUIRED_EXPERIENCE_KEYWORDS
+        kw: find_keyword_in_entries(filtered_entries, kw)
+        for kw in REQUIRED_EXPERIENCE_KEYWORDS
     }
     all_required_found = all(ev is not None for ev in required_evidence.values())
 
@@ -720,7 +752,9 @@ def format_date(d: dt.date) -> str:
 
 def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
     total = len(results)
-    passed = sum(1 for r in results if bool(r["passed"]) and not bool(r.get("ambiguity")))
+    passed = sum(
+        1 for r in results if bool(r["passed"]) and not bool(r.get("ambiguity"))
+    )
     ambiguous = sum(1 for r in results if bool(r.get("ambiguity")))
     failed = total - passed - ambiguous
 
@@ -733,7 +767,9 @@ def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
     lines.append(f"- Ambiguous: {ambiguous}\n")
 
     lines.append("## Active Screening Criteria")
-    lines.append(f"- Required keywords in Experience: {', '.join(sorted(REQUIRED_EXPERIENCE_KEYWORDS))}")
+    lines.append(
+        f"- Required keywords in Experience: {', '.join(sorted(REQUIRED_EXPERIENCE_KEYWORDS))}"
+    )
     lines.append(f"- Minimum DevOps experience: {MIN_DEVOPS_YEARS} years\n")
 
     for r in results:
@@ -752,7 +788,9 @@ def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
             else:
                 lines.append(f"  - {kw}: No")
 
-        lines.append(f"- DevOps years counted (unique, overlap-safe): {r['devops_years']}")
+        lines.append(
+            f"- DevOps years counted (unique, overlap-safe): {r['devops_years']}"
+        )
         lines.append(
             f"- DevOps pass (>= {MIN_DEVOPS_YEARS} years AND no ambiguity): {'Yes' if r['devops_pass'] else 'No'}"
         )
@@ -785,6 +823,7 @@ def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
 # -----------------------------
 # Folder distribution (IDEMPOTENT)
 # -----------------------------
+
 
 def ensure_bucket_dirs(output_root: Path) -> Dict[str, Path]:
     passed_dir = output_root / "passed_cvs"
@@ -820,7 +859,9 @@ def copy_if_absent(src: Path, dst_dir: Path) -> None:
     shutil.copy2(src, dst)
 
 
-def distribute_pdfs(results: List[Dict[str, object]], input_folder: Path, output_root: Path) -> None:
+def distribute_pdfs(
+    results: List[Dict[str, object]], input_folder: Path, output_root: Path
+) -> None:
     bucket_dirs = ensure_bucket_dirs(output_root)
 
     for r in results:
@@ -840,6 +881,7 @@ def distribute_pdfs(results: List[Dict[str, object]], input_folder: Path, output
 # -----------------------------
 # Excel output (formatted + colored Result) — DYNAMIC
 # -----------------------------
+
 
 def write_excel(results: List[Dict[str, object]], output_path: Path) -> None:
     wb = Workbook()
@@ -912,7 +954,9 @@ def write_excel(results: List[Dict[str, object]], output_path: Path) -> None:
             if v is None:
                 continue
             longest = max(longest, len(str(v)))
-        ws.column_dimensions[get_column_letter(col_idx)].width = min(caps.get(h, 45), max(10, longest + 2))
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(
+            caps.get(h, 45), max(10, longest + 2)
+        )
 
     snippet_col_indices = [header_to_col[h] for h in snippet_cols]
     for rr in range(2, ws.max_row + 1):
@@ -927,7 +971,9 @@ def write_excel(results: List[Dict[str, object]], output_path: Path) -> None:
     wb.save(output_path)
 
 
-def apply_cli_overrides(min_devops_years: Optional[float], required_keywords: Optional[List[str]]) -> None:
+def apply_cli_overrides(
+    min_devops_years: Optional[float], required_keywords: Optional[List[str]]
+) -> None:
     """
     Apply CLI overrides to the global EASY CONFIG values.
     """
@@ -944,9 +990,20 @@ def apply_cli_overrides(min_devops_years: Optional[float], required_keywords: Op
 # Main
 # -----------------------------
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Screen CV PDFs for DevOps requirements.")
-    parser.add_argument("folder", nargs="?", default="./cvs", help="Folder containing PDF CVs (default: ./cvs)")
-    parser.add_argument("--output-dir", default=".", help="Output directory (default: current directory)")
+    parser = argparse.ArgumentParser(
+        description="Screen CV PDFs for DevOps requirements."
+    )
+    parser.add_argument(
+        "folder",
+        nargs="?",
+        default="./cvs",
+        help="Folder containing PDF CVs (default: ./cvs)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=".",
+        help="Output directory (default: current directory)",
+    )
 
     # CLI overrides for EASY CONFIG
     parser.add_argument(

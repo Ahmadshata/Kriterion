@@ -123,8 +123,8 @@ done
 MIN_YEARS="${MIN_YEARS_INT}.0"
 
 # Prompt: required keywords
-printf "${BOLD}${WHITE}Required keywords that must appear in applicant Experience section${RESET}\n" >&2
-printf "${DIM}Enter comma-separated values (example: Kubernetes,AWS,Terraform).${RESET}\n" >&2
+printf '%s\n' "${BOLD}${WHITE}Required keywords that must appear in applicant Experience section${RESET}" >&2
+printf '%s\n' "${DIM}Enter comma-separated values (example: Kubernetes,AWS,Terraform).${RESET}" >&2
 KEYWORDS_RAW="$(prompt_value "Keywords" "$DEFAULT_KEYWORDS")"
 
 # Normalize keywords: commas -> spaces, split, trim, drop empties
@@ -169,16 +169,16 @@ title "✨ Installing requirements"
 python3 -m pip install -r requirements.txt
 
 title "Sifting"
-printf "${DIM}" >&2
+printf '%s' "${DIM}" >&2
 printf '%q ' python3 screen_cvs.py "${PY_ARGS[@]}" >&2
-printf "${RESET}\n" >&2
+printf '%s\n' "${RESET}" >&2
 
 python3 screen_cvs.py "${PY_ARGS[@]}"
 
 printf "\n" >&2
 ok "Done"
 hr
-printf "${BOLD}${WHITE}Outputs:${RESET}\n" >&2
+printf '%s\n' "${BOLD}${WHITE}Outputs:${RESET}" >&2
 printf "  - %s\n" "$OUT_DIR/screening_results.csv" >&2
 printf "  - %s\n" "$OUT_DIR/screening_results.xlsx" >&2
 printf "  - %s\n" "$OUT_DIR/screening_report.md" >&2
