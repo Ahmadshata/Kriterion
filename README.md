@@ -53,13 +53,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-Install required packages:
-
-```bash
-pip3 install -r requirements.txt
-```
-
-Optional OCR packages:
+Optional OCR packages (if you want OCR fallback):
 
 ```bash
 pip3 install pytesseract pillow
@@ -76,17 +70,26 @@ If you want OCR to work, install the system tesseract binary:
 Place all Resume PDFs in a folder (example: `./cvs`), then run:
 
 ```bash
-python3 screen_cvs.py ./cvs --output-dir ./out
+./resume-triage.sh
 ```
 
-### Arguments
+If you are using another folder name for the cvs then use it as an argument:
 
-- `folder` (positional, optional): folder containing PDF CVs (default: `./cvs`)
-- `--output-dir` (optional): output directory for reports/files/folders (default: current directory)
+```bash
+./resume-triage.sh ./custom_folder_name
+```
+### Prompts you will see
+
+- Minimum DevOps years required
+- Required keywords (comma-separated)
+- Output directory
+- Confirmation to proceed
+
+The script installs `requirements.txt` and runs the Python program for you.
 
 ## Output Structure
-
-If you use `--output-dir ./out`, the tool will create:
+The default output folder is . (the same directory)
+If you used `./out` as an output folder, the tool will create:
 
 ```text
 out/
@@ -100,17 +103,12 @@ out/
 
 ## Screening Logic (Detailed)
 
-### 1) Kubernetes requirement (Experience-only)
+### 1) Experience requirement
 
-A candidate must have the word "Kubernetes" inside experience entries extracted from the Resume.
-If it appears only in Skills (or outside extracted experience entries), the candidate fails.
+A candidate must have the key words you have entered inside experience entries extracted from the Resume.
+If they appear only in Skills (or outside extracted experience entries), the candidate fails.
 
-### 2) AWS requirement (Experience-only)
-
-A candidate must have the word "AWS" inside experience entries extracted from the Resume.
-If it appears only in Skills (or outside extracted experience entries), the candidate fails.
-
-### 3) DevOps-only experience requirement (>= 3 years)
+### 2) DevOps-only experience requirement (>= Minimum years of Exp you opted for)
 
 The tool calculates DevOps experience in unique months to avoid double counting overlapping roles.
 
@@ -125,7 +123,7 @@ devops_years = (unique_devops_months / 12)  # rounded to 2 decimals
 
 A candidate passes this criterion only if:
 
-- `devops_years >= 3.0`, and
+- `devops_years >= YOUR_MINIMUM_EXP_YEARS`, and
 - there is no date ambiguity
 
 ### 4) Excluding training/institute entries (ITI/NTI/Sprints/DEPI)
@@ -146,8 +144,7 @@ containing "iti".
 
 ## Ambiguity Handling
 
-A Resume is considered Ambiguous when date parsing is uncertain (e.g., year-only dates like
-2021 - 2023, unclear formats, etc.).
+A Resume is considered Ambiguous when date parsing is uncertain.
 
 In such cases:
 
@@ -190,7 +187,7 @@ tesseract --version
 Ensure `openpyxl` is installed:
 
 ```bash
-pip show openpyxl
+pip3 show openpyxl
 ```
 
 ## Security & Privacy

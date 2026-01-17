@@ -1,6 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Orange (ANSI 256-color)
+ORANGE=$'\033[38;5;208m'
+BOLD=$'\033[1m'
+RESET=$'\033[0m'
+
+
+print_banner() {
+  cat <<'EOF'
+  ____  _____ ____  _   _ __  __ _____
+ |  _ \| ____/ ___|| | | |  \/  | ____|
+ | |_) |  _| \___ \| | | | |\/| |  _|
+ |  _ <| |___ ___) | |_| | |  | | |___
+ |_| \_\_____|____/ \___/|_|  |_|_____|
+
+  _____ ____  ___    _    ____  _____
+ |_   _|  _ \|_ _|  / \  / __ || ____|
+   | | | |_) || |  / _ \ \___ ||  _|
+   | | |  _ < | | / ___ \ ___)|| |___
+   |_| |_| \_\___/_/   \_\____/|_____|
+            
+            by: Ahmed Shata
+EOF
+}
+
+clear
+printf "%s%s" "${BOLD}" "${ORANGE}"
+print_banner
+printf "%s\n\n" "${RESET}"
+
+# 2) Now start prompts immediately (NO clear here)
+printf "\n"
+
 # -----------------------------
 # Simple TUI styling
 # -----------------------------
@@ -86,18 +118,18 @@ DEFAULT_MIN_YEARS="3.0"
 DEFAULT_KEYWORDS="Kubernetes,AWS"
 DEFAULT_OUT_DIR="."
 
-title "CV Screening CLI"
+title "Resume Triage CLI"
 printf "${DIM}CV folder: %s${RESET}\n\n" "$CVS_DIR" >&2
 
 # Prompt: minimum DevOps years
-MIN_YEARS="$(prompt_value "Minimum DevOps years required" "$DEFAULT_MIN_YEARS")"
+MIN_YEARS="$(prompt_value "Minimum DevOps years required (Float)" "$DEFAULT_MIN_YEARS")"
 while ! is_number "$MIN_YEARS"; do
   warn "Invalid number: '$MIN_YEARS' (examples: 3, 3.0, 2.75)"
-  MIN_YEARS="$(prompt_value "Minimum DevOps years required" "$DEFAULT_MIN_YEARS")"
+  MIN_YEARS="$(prompt_value "Minimum DevOps years required (Float)" "$DEFAULT_MIN_YEARS")"
 done
 
 # Prompt: required keywords
-printf "${BOLD}${WHITE}Required keywords (must appear in Experience)${RESET}\n" >&2
+printf "${BOLD}${WHITE}Required keywords that must appear in applicant Experience section${RESET}\n" >&2
 printf "${DIM}Enter comma-separated values (example: Kubernetes,AWS,Terrraform).${RESET}\n" >&2
 KEYWORDS_RAW="$(prompt_value "Keywords" "$DEFAULT_KEYWORDS")"
 
@@ -112,12 +144,12 @@ for kw in "${KEYWORDS_ARR[@]}"; do
 done
 
 if [[ "${#KEYWORDS_CLEAN[@]}" -eq 0 ]]; then
-  err "You must provide at least one keyword."
+  err "You must provide at least one keyword!"
   exit 1
 fi
 
 # Prompt: output directory (default is current directory ".")
-OUT_DIR="$(prompt_value "Output directory" "$DEFAULT_OUT_DIR")"
+OUT_DIR="$(prompt_value "Output directory (Press Enter to use the current directory)" "$DEFAULT_OUT_DIR")"
 OUT_DIR="$(trim "$OUT_DIR")"
 [[ -z "$OUT_DIR" ]] && OUT_DIR="."
 
@@ -128,7 +160,7 @@ printf "${BOLD}${WHITE}Output dir:${RESET} %s\n" "$OUT_DIR" >&2
 printf "${BOLD}${WHITE}Min DevOps years:${RESET} %s\n" "$MIN_YEARS" >&2
 printf "${BOLD}${WHITE}Required keywords:${RESET} %s\n\n" "${KEYWORDS_CLEAN[*]}" >&2
 
-if ! confirm_yn "Proceed to run screening now?"; then
+if ! confirm_yn "Proceed to run the triage now?"; then
   warn "Cancelled."
   exit 0
 fi
@@ -139,7 +171,10 @@ for kw in "${KEYWORDS_CLEAN[@]}"; do
   PY_ARGS+=( "--required-keyword" "$kw" )
 done
 
-title "Running"
+title "✨ Installing requirements"
+python3 -m pip install -r requirements.txt
+
+title "Sifting 😈"
 printf "${DIM}" >&2
 printf '%q ' python3 screen_cvs.py "${PY_ARGS[@]}" >&2
 printf "${RESET}\n" >&2
@@ -147,7 +182,8 @@ printf "${RESET}\n" >&2
 python3 screen_cvs.py "${PY_ARGS[@]}"
 
 printf "\n" >&2
-ok "Done."
+ok "Done ✅"
+hr
 printf "${BOLD}${WHITE}Outputs:${RESET}\n" >&2
 printf "  - %s\n" "$OUT_DIR/screening_results.csv" >&2
 printf "  - %s\n" "$OUT_DIR/screening_results.xlsx" >&2
