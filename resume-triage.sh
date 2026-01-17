@@ -6,7 +6,6 @@ ORANGE=$'\033[38;5;208m'
 BOLD=$'\033[1m'
 RESET=$'\033[0m'
 
-
 print_banner() {
   cat <<'EOF'
   ____  _____ ____  _   _ __  __ _____
@@ -29,9 +28,6 @@ clear
 printf "%s%s" "${BOLD}" "${ORANGE}"
 print_banner
 printf "%s\n\n" "${RESET}"
-
-# 2) Now start prompts immediately (NO clear here)
-printf "\n"
 
 # -----------------------------
 # Simple TUI styling
@@ -71,7 +67,7 @@ trim() {
 }
 
 prompt_value() {
-  # Prints prompt to stderr; returns chosen value on stdout (safe for command substitution).
+  # Prints prompt to stderr; returns chosen value on stdout.
   # $1 label, $2 default
   local label="$1"
   local def="$2"
@@ -104,33 +100,31 @@ confirm_yn() {
   done
 }
 
-is_number() {
-  # Accepts integer or decimal (e.g., 3 or 3.0 or 2.75)
-  [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]
-}
-
 # -----------------------------
 # Main
 # -----------------------------
 CVS_DIR="${1:-./cvs}"  # no prompt; pass as arg or default to ./cvs
 
-DEFAULT_MIN_YEARS="3.0"
+DEFAULT_MIN_YEARS_INT="3"
 DEFAULT_KEYWORDS="Kubernetes,AWS"
 DEFAULT_OUT_DIR="."
 
 title "Resume Triage CLI"
 printf "${DIM}CV folder: %s${RESET}\n\n" "$CVS_DIR" >&2
 
-# Prompt: minimum DevOps years
-MIN_YEARS="$(prompt_value "Minimum DevOps years required (Float)" "$DEFAULT_MIN_YEARS")"
-while ! is_number "$MIN_YEARS"; do
-  warn "Invalid number: '$MIN_YEARS' (examples: 3, 3.0, 2.75)"
-  MIN_YEARS="$(prompt_value "Minimum DevOps years required (Float)" "$DEFAULT_MIN_YEARS")"
+# Prompt: minimum DevOps years (INTEGER input)
+MIN_YEARS_INT="$(prompt_value "Minimum DevOps years required (Integer)" "$DEFAULT_MIN_YEARS_INT")"
+while [[ ! "$MIN_YEARS_INT" =~ ^[0-9]+$ ]]; do
+  warn "Invalid integer: '$MIN_YEARS_INT' (examples: 1, 2, 3)"
+  MIN_YEARS_INT="$(prompt_value "Minimum DevOps years required (Integer)" "$DEFAULT_MIN_YEARS_INT")"
 done
+
+# Convert to float string for Python (e.g., "3" -> "3.0")
+MIN_YEARS="${MIN_YEARS_INT}.0"
 
 # Prompt: required keywords
 printf "${BOLD}${WHITE}Required keywords that must appear in applicant Experience section${RESET}\n" >&2
-printf "${DIM}Enter comma-separated values (example: Kubernetes,AWS,Terrraform).${RESET}\n" >&2
+printf "${DIM}Enter comma-separated values (example: Kubernetes,AWS,Terraform).${RESET}\n" >&2
 KEYWORDS_RAW="$(prompt_value "Keywords" "$DEFAULT_KEYWORDS")"
 
 # Normalize keywords: commas -> spaces, split, trim, drop empties
@@ -157,7 +151,7 @@ printf "\n" >&2
 title "Run Summary"
 printf "${BOLD}${WHITE}CV folder:${RESET} %s\n" "$CVS_DIR" >&2
 printf "${BOLD}${WHITE}Output dir:${RESET} %s\n" "$OUT_DIR" >&2
-printf "${BOLD}${WHITE}Min DevOps years:${RESET} %s\n" "$MIN_YEARS" >&2
+printf "${BOLD}${WHITE}Min DevOps years:${RESET} %s\n" "$MIN_YEARS_INT" >&2
 printf "${BOLD}${WHITE}Required keywords:${RESET} %s\n\n" "${KEYWORDS_CLEAN[*]}" >&2
 
 if ! confirm_yn "Proceed to run the triage now?"; then
@@ -174,7 +168,7 @@ done
 title "✨ Installing requirements"
 python3 -m pip install -r requirements.txt
 
-title "Sifting 😈"
+title "Sifting"
 printf "${DIM}" >&2
 printf '%q ' python3 screen_cvs.py "${PY_ARGS[@]}" >&2
 printf "${RESET}\n" >&2
@@ -182,7 +176,7 @@ printf "${RESET}\n" >&2
 python3 screen_cvs.py "${PY_ARGS[@]}"
 
 printf "\n" >&2
-ok "Done ✅"
+ok "Done"
 hr
 printf "${BOLD}${WHITE}Outputs:${RESET}\n" >&2
 printf "  - %s\n" "$OUT_DIR/screening_results.csv" >&2
