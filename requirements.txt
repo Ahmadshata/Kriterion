@@ -1,3 +1,5 @@
 wheel==0.45.1
 pymupdf==1.26.7
 openpyxl==3.1.5
+pyyaml>=6.0
+python-docx>=1.1.0

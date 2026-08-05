@@ -1,202 +1,390 @@
-# Resume Screening Tool (PDF) - DevOps Requirements
+<p align="center">
+  <img src="assets/kriterion.gif" alt="Kriterion" width="300">
+</p>
+<h1 align="center">Kriterion</h1>
 
-A local, offline Python utility that screens a folder of PDF CVs against strict DevOps criteria,
-generates a detailed report, produces a formatted Excel sheet, and sorts CVs into
-Passed/Failed/Ambiguous folders.
+<p align="center">
+  <strong>AI-powered CV screening — just tell it what you're looking for.</strong><br>
+  Talk to Kriterion through GitHub Copilot to screen hundreds of resumes in seconds.<br>
+  No flags to memorize, no config files to write manually.
+</p>
 
-![Resume Triage Preview](assets/resume-triage.png)
+<br>
 
-## Features
+<p align="center">
+  <a href="#ai-usage"><img alt="Copilot Ready" src="https://img.shields.io/badge/copilot-ready-7c3aed?style=for-the-badge&logo=github&logoColor=white"></a>
+  <a href="#requirements"><img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-6d28d9?style=for-the-badge&logo=python&logoColor=white"></a>
+  <a href="#supported-formats"><img alt="PDF + DOCX" src="https://img.shields.io/badge/formats-pdf_%2B_docx-8b5cf6?style=for-the-badge"></a>
+  <a href="#incremental-runs"><img alt="Incremental" src="https://img.shields.io/badge/runs-incremental-22c55e?style=for-the-badge"></a>
+  <a href="#security--privacy"><img alt="Local First" src="https://img.shields.io/badge/privacy-local_first-111827?style=for-the-badge&logo=shieldsdotio&logoColor=white"></a>
+</p>
 
-- Batch process all `.pdf` files in a given folder.
-- Hard requirements:
-  - "Kubernetes" must appear in the Experience content (not just Skills).
-  - "AWS" must appear in the Experience content (not just Skills).
-  - Candidate must have >= 3 years of DevOps-only experience.
-  - Any entries mentioning ITI/NTI/Sprints/DEPI (and full institute names) are excluded.
-- Evidence included:
-  - Page number and a short snippet showing Kubernetes/AWS matches (when found).
-  - DevOps roles counted and how much time was counted (overlap-safe).
-  - Excluded entries listed.
-- Outputs:
-  - `screening_results.csv`
-  - `screening_results.xlsx` (formatted + color-coded Result column)
-  - `screening_report.md`
-  - `passed_cvs/`, `failed_cvs/`, `ambiguous_cvs/`
-- Offline-first: no external APIs or internet calls.
-- OCR fallback (optional) for scanned PDFs if installed.
+<p align="center">
+  <a href="#ai-usage">AI Usage</a>
+  &nbsp;&bull;&nbsp;
+  <a href="#quick-start">Quick Start</a>
+  &nbsp;&bull;&nbsp;
+  <a href="#how-it-works">How It Works</a>
+  &nbsp;&bull;&nbsp;
+  <a href="#html-dashboard">Dashboard</a>
+  &nbsp;&bull;&nbsp;
+  <a href="#cli-reference">CLI Reference</a>
+  &nbsp;&bull;&nbsp;
+  <a href="#troubleshooting">Troubleshooting</a>
+</p>
+
+---
+
+## AI Usage
+
+Kriterion integrates with **GitHub Copilot** — just talk to it in natural language. Open Copilot Chat in VS Code and use `@kriterion`:
+
+### Create a screening profile
+
+```
+@kriterion create a profile for Senior Backend Engineer
+```
+
+Copilot walks you through a few questions:
+- What role are you hiring for?
+- Minimum years of experience?
+- What skills must appear in their work experience?
+- Any programs/companies/universities to filter?
+
+Then it generates a ready-to-use profile file in `profiles/`.
+
+### Scan CVs
+
+```
+@kriterion scan the CVs in ./cvs using profiles/senior_backend_engineer.yaml
+```
+
+Or even simpler:
+
+```
+@kriterion screen candidates for the DevOps role
+```
+
+Kriterion runs the screening, opens the interactive dashboard, and keeps the webserver attached to the terminal until you press `Ctrl+C`.
+
+### More examples
+
+| What you say | What happens |
+|---|---|
+| `@kriterion create a profile for SRE` | Guided profile creation |
+| `@kriterion scan ~/candidates/batch2` | Screen CVs in that folder using default profile |
+| `@kriterion screen using profiles/backend.yaml` | Screen `./cvs` with specific profile |
+| `@kriterion what profiles do I have?` | Lists available profiles |
+
+---
+
+## Quick Start
+
+```bash
+# 1. Clone and set up
+git clone <repo-url> && cd kriterion
+./setup.sh
+
+# 2. Drop CVs into the cvs/ folder
+cp ~/Downloads/*.pdf ./cvs/
+
+# 3. Talk to Copilot
+# @kriterion create a profile for Senior DevOps Engineer
+# @kriterion scan cvs
+```
+
+Or run directly:
+
+```bash
+./kriterion.sh
+```
+
+The dashboard opens automatically in your browser. Kriterion then runs as a normal foreground webserver; press `Ctrl+C` when you are finished.
+
+---
+
+## How It Works
+
+```text
+┌─────────────┐     ┌──────────────┐     ┌──────────────────┐     ┌────────────────┐
+│  CV Folder  │────▶│  Text Extrac │────▶│  Screening Engine │────▶│  HTML Dashboard│
+│  PDF / DOCX │     │  PyMuPDF     │     │  Date Parsing     │     │  Excel / CSV   │
+│             │     │  python-docx │     │  Keyword Matching │     │  Markdown      │
+│             │     │  OCR (opt)   │     │  Scoring + Verdict│     │                │
+└─────────────┘     └──────────────┘     └──────────────────┘     └────────────────┘
+```
+
+| Step | What Happens |
+|------|--------------|
+| **Extract** | Text pulled from each PDF/DOCX page by page |
+| **Parse** | Experience section identified; entries split by date ranges |
+| **Match** | Required keywords searched with synonym expansion (e.g., `kubernetes` matches `k8s`) |
+| **Calculate** | DevOps years computed from overlapping-safe unique months |
+| **Score** | Weighted confidence score (0–100) assigned per candidate |
+| **Verdict** | Clear PASS / FAIL / AMBIGUOUS with specific reasons |
+| **Report** | Interactive HTML dashboard opens automatically |
+
+---
 
 ## Requirements
 
-### Runtime
+| Requirement | Notes |
+|-------------|-------|
+| **Python** | 3.9 or higher |
+| **OS** | macOS, Linux, or Windows |
+| **Setup** | Run `./setup.sh` once — handles everything |
 
-- Python 3.9+
-- macOS / Linux / Windows (OCR dependencies vary by OS)
+The setup script installs Kriterion's agent and skills for both supported assistants:
 
-### Python dependencies
+- GitHub Copilot: `~/.copilot/agents/` and `~/.copilot/skills/`
+- Claude: `~/.claude/agents/` and `~/.claude/skills/`
 
-- `PyMuPDF` (PDF text extraction)
-- `openpyxl` (Excel output formatting)
+Running setup again refreshes only Kriterion's installed files from the canonical copies under `.github/`.
 
-Optional (only for OCR fallback):
+### GitHub Copilot for ambiguous candidates
 
-- `pytesseract`
-- `Pillow`
-- System `tesseract` binary installed
+Install the GitHub Copilot extension in VS Code for the conversational `@kriterion` experience. Install and authenticate the `copilot` CLI so Kriterion can automatically produce evidence-backed AI verdicts for ambiguous candidates.
 
-## Installation
-
-Create and activate a virtual environment (recommended):
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-Optional OCR packages (if you want OCR fallback):
+### Optional: OCR for scanned PDFs
 
 ```bash
-pip3 install pytesseract pillow
+pip install pytesseract pillow
+brew install tesseract        # macOS
 ```
 
-If you want OCR to work, install the system tesseract binary:
+---
 
-- macOS (Homebrew): `brew install tesseract`
-- Ubuntu/Debian: `sudo apt-get install tesseract-ocr`
-- Windows: install via the official installer and ensure `tesseract` is on PATH
+## Profile Configuration
 
-## Usage
+Profiles define what you're looking for. Create them via Copilot (`@kriterion create a profile`) or manually:
 
-Place all Resume PDFs in a folder (example: `./cvs`), then run:
+```yaml
+role: Senior DevOps Engineer
+min_experience_years: 3
 
-```bash
-./resume-triage.sh
+must_have_in_experience:
+  - kubernetes
+  - aws
+  - helm
+
+education_programs:
+  - iti
+  - nti
+  - sprints
+  - depi
+  - alx
+
+preferred_programs: null
+excluded_companies: null
+excluded_universities: null
+min_score: null
 ```
 
-If you are using another folder name for the cvs then use it as an argument:
+| Field | Purpose |
+|-------|---------|
+| `role` | Names the output directory |
+| `min_experience_years` | Minimum relevant years to pass |
+| `must_have_in_experience` | Keywords that must appear in experience entries (synonym-aware) |
+| `education_programs` | Programs whose time is excluded from experience count |
+| `preferred_programs` | Candidate must have attended one (null to skip) |
+| `excluded_companies` | Reject if worked here (null to skip) |
+| `excluded_universities` | Reject if attended here (null to skip) |
+| `min_score` | Minimum confidence score threshold (null to skip) |
 
-```bash
-./resume-triage.sh ./custom_folder_name
-```
-### Prompts you will see
+Store profiles in `profiles/` for multi-role setups.
 
-- Minimum DevOps years required
-- Required keywords (comma-separated)
-- Output directory
-- Confirmation to proceed
+---
 
-The script installs `requirements.txt` and runs the Python program for you.
+## HTML Dashboard
 
-## Output Structure
-The default output folder is . (the same directory)
-If you used `./out` as an output folder, the tool will create:
+The report is a fully interactive single-page app:
+
+- Candidate table with score bars and clear outcome badges
+- Click any row for a clean inline review with rationale, requirement evidence, career history, and screening notes
+- Pass/Fail/Ambiguous filter buttons with donut chart
+- Dark/Light mode toggle
+- Clickable CV filenames open the source PDF
+- Deterministic semantic relationships: demonstrated AKS/EKS/GKE usage can satisfy Kubernetes
+- AI Verdict appears only for ambiguous candidates and runs automatically in the served dashboard
+- AI returns a PASS/FAIL recommendation with exact, locally verified CV quotations
+- The reviewer makes the authoritative final PASS/FAIL decision
+- Static HTML remains shareable; AI Verdict requires the local served dashboard
+
+---
+
+## Screening Logic
+
+### Keywords checked in experience, not skills lists
+
+A keyword that only appears in a "Skills" section but never in an actual job entry does **not** count. This prevents keyword-stuffing.
+
+### Synonym expansion (60+ tools mapped)
+
+Write `kubernetes` — the tool also matches `k8s`, `kube`. Write `aws` — matches `amazon web services`. Over 60 DevOps tools are pre-mapped.
+
+### Deterministic semantic relationships
+
+Related products are not treated as simple synonyms. For example, AKS is a managed Kubernetes service rather than another spelling of Kubernetes:
+
+- “Managed AKS clusters in production” is accepted as deterministic managed-Kubernetes usage.
+- “Azure services: AKS, Functions” is marked ambiguous because usage is unclear.
+- No Kubernetes or related evidence remains a deterministic failure.
+
+The built-in, versioned relationship map currently covers AKS, EKS, GKE, OpenShift, Rancher, and Tanzu Kubernetes Grid for Kubernetes requirements.
+
+### Ambiguity-only AI Verdict
+
+AI is never used to reconsider clear passes or failures. When the served dashboard opens, each ambiguous candidate is automatically sent to Copilot in sequence. Copilot receives only Kriterion's parsed work-experience entries—not skills, certifications, courses, education, or projects—and returns a conservative PASS/FAIL recommendation addressing only the unresolved criteria. Kriterion rejects out-of-scope evidence, forces FAIL when an already-deterministic requirement is missing, and verifies every quotation against the parsed work experience. The reviewer then records the authoritative final PASS or FAIL. This human decision is stored separately and does not rewrite Kriterion's original deterministic `AMBIGUOUS` result.
+
+Use `--no-auto-ai` when ambiguous CVs must not be transmitted automatically. The reviewer can still request each AI verdict manually from the dashboard.
+
+### Overlapping-safe year calculation
+
+DevOps years = unique months across all relevant roles. Concurrent roles don't double-count.
+
+### Education program detection
+
+Training programs (ITI, NTI, etc.) listed under "Experience" are reclassified as education — their duration is excluded from the year count.
+
+### Transparent verdicts
+
+Every decision has a specific reason:
+
+| Verdict | Example |
+|---------|---------|
+| **PASS** | All criteria met |
+| **FAIL** | Missing: helm |
+| **FAIL** | Insufficient experience: 2.83 yr (need 3.0) |
+| **AMBIGUOUS** | Date or related-technology evidence requires manual review |
+
+---
+
+## Incremental Runs
+
+Re-running only processes **new or changed** CVs:
 
 ```text
-out/
-  screening_results.csv
-  screening_results.xlsx
-  screening_report.md
-  passed_cvs/
-  failed_cvs/
-  ambiguous_cvs/
+Cached: 42 | New/Changed: 5 | Removed: 0
 ```
 
-## Screening Logic (Detailed)
+Delete `manifest.json` to force a full re-run.
 
-### 1) Experience requirement
+---
 
-A candidate must have the key words you have entered inside experience entries extracted from the Resume.
-If they appear only in Skills (or outside extracted experience entries), the candidate fails.
-
-### 2) DevOps-only experience requirement (>= Minimum years of Exp you opted for)
-
-The tool calculates DevOps experience in unique months to avoid double counting overlapping roles.
-
-A role is counted as DevOps-related if the entry contains one or more DevOps keywords, such as:
-DevOps, SRE, Kubernetes, Terraform, CI/CD, Jenkins, GitHub Actions, Helm, EKS, Docker, Argo CD, etc.
-
-Total DevOps time is computed as:
+## Output Structure
 
 ```
-devops_years = (unique_devops_months / 12)  # rounded to 2 decimals
+Senior_DevOps_Engineer_2026-07-30/
+├── screening_report.html     ← Interactive dashboard (auto-opens)
+├── screening_report.md       ← Markdown report
+├── screening_results.csv     ← Spreadsheet import
+├── screening_results.xlsx    ← Color-coded Excel
+├── manifest.json             ← Incremental run cache
+├── extracted/                ← Extracted CV text used by local AI actions
+├── semantic_reviews.json     ← AI verdicts, verified evidence + human decisions
+├── icon.png                  ← Dashboard favicon
+├── passed_cvs/               ← Copies of passing CVs
+├── failed_cvs/               ← Copies of failing CVs
+└── ambiguous_cvs/            ← Copies of ambiguous CVs
 ```
 
-A candidate passes this criterion only if:
+---
 
-- `devops_years >= YOUR_MINIMUM_EXP_YEARS`, and
-- there is no date ambiguity
+## CLI Reference
 
-### 4) Excluding training/institute entries (ITI/NTI/Sprints/DEPI)
+For users who prefer the command line:
 
-Any experience entry mentioning:
+```bash
+# Default (uses ./cvs and ./profiles/profile.yaml)
+./kriterion.sh
 
-- ITI, NTI, Sprints, DEPI
-- Information Technology Institute
-- National Technology Institute
+# Custom CV folder
+./kriterion.sh --cvs-dir ./my-cvs
 
-is ignored entirely:
+# Custom folder, profile, and output parent
+./kriterion.sh --cvs-dir ./my-cvs --profile ./profiles/backend.yaml --output-dir ./reports
 
-- It does not count toward DevOps experience
-- It cannot be used as evidence for AWS/Kubernetes
+# Keep the server in the foreground without opening a browser
+./kriterion.sh --no-open
 
-This is implemented using word-boundary regex, preventing false matches like "certification"
-containing "iti".
+# Direct Python with flags
+python3 kriterion.py ./cvs --profile profiles/profile.yaml --output-dir ./out
+python3 kriterion.py ./cvs --min-devops-years 3 --required-keyword kubernetes --required-keyword aws
+python3 kriterion.py ./cvs --profile profiles/profile.yaml --min-score 70 -v
+```
 
-## Ambiguity Handling
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--cvs-dir` | Path to CV folder | `./cvs` |
+| `--output-dir` | Output directory | `.` |
+| `--profile` | YAML profile path | `./profiles/profile.yaml` |
+| `--min-devops-years` | Override min experience | From profile |
+| `--required-keyword` | Override keywords (repeatable) | From profile |
+| `--min-score` | Min score threshold | None |
+| `--no-serve` | Generate static output without the AI server | Off |
+| `--no-open` | Run the foreground server without opening a browser | Off |
+| `--no-auto-ai` | Require manual AI Verdict requests for ambiguous CVs | Off |
+| `-v` | Verbose scoring output | Off |
 
-A Resume is considered Ambiguous when date parsing is uncertain.
+`kriterion.sh` is a thin launcher: it does not install dependencies, activate an environment, inspect the profile, or prompt for input. Run `./setup.sh` separately when installation is needed. Additional options are forwarded to `kriterion.py`.
 
-In such cases:
-
-- The tool will sort the PDF into `ambiguous_cvs/`
-- The Excel result will show `AMBIGUOUS`
-- The candidate cannot PASS (strict rule: no ambiguity allowed for pass)
-
-## Notes / Known Limitations
-
-- PDF text order can be inconsistent depending on how the PDF was authored.
-  This tool uses date-range-based extraction and a heading-based fallback to mitigate that.
-- If a Resume is heavily graphical or scanned, OCR may be required.
-  If OCR dependencies are not installed, such CVs may be marked ambiguous or missed.
-- "Experience section" is interpreted as experience entries extracted from the Resume.
-  This is more robust than relying solely on headings, which can appear out of order in text extraction.
+---
 
 ## Troubleshooting
 
-### 1) AWS/Kubernetes not detected despite being present
+| Problem | Solution |
+|---------|----------|
+| Keywords not detected | Must appear in experience entries, not just Skills section |
+| Stale results | Delete `manifest.json` and re-run |
+| OCR not working | `brew install tesseract` + `pip install pytesseract pillow` |
+| Excel not generated | `pip install openpyxl` (included in setup) |
+| AI Verdict unavailable | It appears only for ambiguous candidates; install/authenticate the `copilot` CLI and open the served dashboard URL |
+| Copilot or Claude not recognizing Kriterion | Re-run `./setup.sh`, then refresh the assistant's agent and skill list |
 
-- The PDF may be scanned -> enable OCR dependencies.
-- The Resume may use unusual formatting; check `screening_report.md` to see how many
-  experience entries were detected (`experience_entries_found`).
-
-### 2) OCR not running
-
-Ensure you installed:
-
-- `pytesseract`, `Pillow`
-- system `tesseract` binary
-
-Verify:
-
-```bash
-tesseract --version
-```
-
-### 3) Excel file not generated
-
-Ensure `openpyxl` is installed:
-
-```bash
-pip3 show openpyxl
-```
+---
 
 ## Security & Privacy
 
-This tool runs locally and does not upload Resume content anywhere.
-No external API calls are made.
+| Behavior | Detail |
+|----------|--------|
+| **Local-first screening** | Extraction, matching, scoring, and report generation run locally |
+| **Scoped AI use** | Only ambiguous CVs are sent to GitHub Copilot; this happens automatically by default and can be disabled with `--no-auto-ai` |
+| **Loopback-only server** | The dashboard server binds to `127.0.0.1` and protects AI endpoints with a random session token |
+| **Verified evidence** | Every AI evidence snippet must match parsed work-experience text or the verdict is rejected |
+| **Human control** | AI PASS/FAIL is advisory; the final human decision is stored separately in `semantic_reviews.json` and never silently changes deterministic screening output |
+| **Foreground server** | The server stays attached to the terminal and stops explicitly with `Ctrl+C` |
 
-Output files may contain Resume snippets; handle outputs according to your organization's policies.
+---
+
+## Project Structure
+
+```
+kriterion/
+├── kriterion.py               ← Entry point (main + argparse)
+├── kriterion.sh               ← Shell wrapper
+├── setup.sh                   ← One-command setup
+├── profiles/
+│   ├── profile.yaml           ← Default role profile
+│   └── ...                    ← Additional role profiles
+├── .github/
+│   ├── agents/
+│   │   └── kriterion.agent.md ← Canonical custom agent
+│   └── skills/
+│       ├── create-profile/SKILL.md
+│       └── scan-cvs/SKILL.md
+├── assets/                    ← Icons and media
+├── cvs/                       ← Input folder (your CVs)
+└── requirements.txt
+```
+
+---
 
 ## License
 
 Apache License 2.0. See `LICENSE`.
+
+---
+
+<p align="center">
+  <sub>Built by <strong>Ahmed Shata</strong></sub>
+</p>

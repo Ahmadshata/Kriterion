@@ -1,0 +1,81 @@
+# =============================================================================
+# Kriterion — Job Profile Configuration
+# =============================================================================
+# This file defines the screening criteria for a specific role.
+# Copy and modify this file for different positions.
+
+# The role being screened for
+role: Senior DevOps Engineer
+
+# Minimum years of relevant experience required
+min_experience_years: 3
+
+# Skills that MUST appear in the candidate's Experience section (not just Skills).
+# The tool uses synonym matching — e.g., "kubernetes" also matches "k8s", "kube".
+# It also uses versioned semantic relationships: demonstrated AKS/EKS/GKE usage
+# can satisfy Kubernetes, while a related term without usage context is marked
+# ambiguous for an automatic evidence-backed AI recommendation and human decision.
+# If a keyword appears only in a Skills section but NOT in any experience entry,
+# the candidate will fail.
+must_have_in_experience:
+  - kubernetes
+  - aws
+  - helm
+
+# Minimum confidence score to pass (0-100). Set to null to disable.
+min_score: null
+
+# ---------------------------------------------------------------------------
+# Training programs to treat as education (NOT professional experience).
+# Time spent in these programs will NOT count toward years of experience.
+# NOTE: Candidates are NOT rejected for attending these programs — their time
+# there is simply categorized as education rather than work experience.
+# ---------------------------------------------------------------------------
+education_programs:
+  - iti
+  - nti
+  - sprints
+  - depi
+  - alx
+  - information technology institute
+  - national technology institute
+  - digital egypt pioneers initiative
+
+# ---------------------------------------------------------------------------
+# Preferred programs — candidate MUST have attended one of these programs.
+# The tool looks for these in BOTH the Education and Experience sections.
+# If a candidate has none of these, they fail.
+# Set to null or remove to disable this check.
+# ---------------------------------------------------------------------------
+preferred_programs: null
+# preferred_programs:
+#   - iti
+#   - information technology institute
+#   - alx
+#   - digital egypt pioneers initiative
+
+# ---------------------------------------------------------------------------
+# Excluded companies — reject candidates who have worked at any of these.
+# Uses word-boundary matching against experience entries.
+# ---------------------------------------------------------------------------
+excluded_companies: null
+# excluded_companies:
+#   - Acme Corp
+#   - Bad Company LLC
+
+# ---------------------------------------------------------------------------
+# Excluded universities — reject candidates who graduated from any of these.
+# The tool scans the full CV text for these (education sections, headers, etc.)
+# ---------------------------------------------------------------------------
+excluded_universities: null
+# excluded_universities:
+#   - Some University
+#   - Another Institute
+
+# Scoring weights (must sum to 100). Optional — defaults shown below.
+# scoring_weights:
+#   keywords_found: 30
+#   devops_years: 30
+#   recency: 20
+#   keyword_depth: 10
+#   no_ambiguity: 10

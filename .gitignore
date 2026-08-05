@@ -1,8 +1,11 @@
 .DS_Store
 .venv/
 .ruff_cache/
+__pycache__/
+*.py[cod]
 cvs/
 *_cv/
+*_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
 screening_report.md
 screening_results.csv
 screening_results.xlsx
