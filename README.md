@@ -82,7 +82,7 @@ Kriterion runs the screening, opens the interactive dashboard, and keeps the web
 
 ```bash
 # 1. Clone and set up
-git clone <repo-url> && cd kriterion
+git clone https://github.com/Ahmadshata/Kriterion.git && cd Kriterion
 ./setup.sh
 
 # 2. Drop CVs into the cvs/ folder
