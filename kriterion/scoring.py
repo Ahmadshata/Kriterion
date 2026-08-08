@@ -9,16 +9,21 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from kriterion import config
-from kriterion.dates import months_to_years, normalize_date_text
+from kriterion.dates import DATE_RANGE_PATTERN, months_to_years, normalize_date_text
 from kriterion.experience import (
     Entry,
     Role,
     compute_devops_roles,
     extract_experience_entries,
+    has_experience_layout_anomaly,
     is_devops_related,
     is_education_program,
 )
-from kriterion.extraction import extract_text_by_page, extract_text_from_docx
+from kriterion.extraction import (
+    extract_text_by_page,
+    extract_text_from_docx,
+    pdf_has_multi_column_layout,
+)
 from kriterion.synonyms import (
     KEYWORD_INDEX,
     SEMANTIC_RELATIONSHIPS,
@@ -27,6 +32,8 @@ from kriterion.synonyms import (
     USAGE_ACTION_PATTERN,
     _build_keyword_pattern,
     match_keyword_in_text,
+    normalize_heading,
+    normalize_tool_name,
     rejoin_hyphenated_words,
 )
 
@@ -42,6 +49,22 @@ class KeywordMatch:
     snippet: str
     matched_variant: str
     entry_index: int
+
+
+_EVIDENCE_BULLET_PREFIX = re.compile(
+    r"^\s*(?:[•‣◦⁃∙●○▪▫–—·►▸\-*\uf0b7]|[oO](?=\s*$))\s*"
+)
+_NON_FILTERABLE_TOOL_CONCEPTS = {
+    "ci/cd",
+    "cloud engineer",
+    "devops",
+    "gitops",
+    "infrastructure",
+    "infrastructure as code",
+    "linux",
+    "platform engineer",
+    "sre",
+}
 
 
 # ---------------------
@@ -63,6 +86,7 @@ def _keyword_evidence_detail(
             "matched_term": best.matched_variant,
             "page": best.page_num,
             "snippet": best.snippet,
+            "citations": [_citation_from_match(match) for match in direct_matches],
             "qualifies": True,
             "needs_review": False,
         }
@@ -85,6 +109,7 @@ def _keyword_evidence_detail(
             "matched_term": best.matched_variant,
             "page": best.page_num,
             "snippet": best.snippet,
+            "citations": [_citation_from_match(match) for match in matches],
             "qualifies": demonstrated_usage,
             "needs_review": not demonstrated_usage,
         }
@@ -95,8 +120,18 @@ def _keyword_evidence_detail(
         "matched_term": "",
         "page": None,
         "snippet": "",
+        "citations": [],
         "qualifies": False,
         "needs_review": False,
+    }
+
+
+def _citation_from_match(match: KeywordMatch) -> Dict[str, object]:
+    """Return the stable, JSON-serializable shape used by report renderers."""
+    return {
+        "page": match.page_num,
+        "snippet": match.snippet,
+        "matched_term": match.matched_variant,
     }
 
 
@@ -114,9 +149,89 @@ def find_keyword_in_entries(
     return None
 
 
+def _clean_evidence_snippet(lines: List[str]) -> str:
+    """Remove PDF bullet artifacts without changing the evidence wording."""
+    cleaned: List[str] = []
+    for line in lines:
+        text = _EVIDENCE_BULLET_PREFIX.sub("", line).rstrip()
+        if text.strip():
+            cleaned.append(text)
+    return "\n".join(cleaned).strip()
+
+
+def _is_standalone_bullet(line: str) -> bool:
+    match = _EVIDENCE_BULLET_PREFIX.match(line)
+    return bool(match and not line[match.end() :].strip())
+
+
+def _starts_with_bullet(line: str) -> bool:
+    return _EVIDENCE_BULLET_PREFIX.match(line) is not None
+
+
+def _is_evidence_section_heading(line: str) -> bool:
+    """Recognize section headings that must never leak into evidence."""
+    text = line.strip()
+    if not text:
+        return False
+    normalized = normalize_heading(text)
+    if normalized in config.EXPERIENCE_HEADINGS or normalized in config.STOP_HEADINGS:
+        return True
+
+    words = normalized.split()
+    if (
+        len(words) <= 6
+        and "experience" in words
+        and any(
+            word in {"consulting", "freelance", "professional", "work"}
+            for word in words
+        )
+    ):
+        return True
+
+    letters = [character for character in text if character.isalpha()]
+    uppercase_ratio = (
+        sum(character.isupper() for character in letters) / len(letters)
+        if letters
+        else 0.0
+    )
+    return len(words) <= 6 and uppercase_ratio >= 0.6
+
+
+def _is_evidence_boundary(line: str) -> bool:
+    return bool(
+        _is_standalone_bullet(line)
+        or DATE_RANGE_PATTERN.search(normalize_date_text(line))
+        or _is_evidence_section_heading(line)
+    )
+
+
+def _evidence_paragraph(entry: Entry, match_line_index: int) -> str:
+    """Return only the bullet paragraph containing a matched source line."""
+    lines = [line_text for _, line_text in entry.lines]
+    start = match_line_index
+    if not _starts_with_bullet(lines[start]):
+        while start > 0:
+            previous = lines[start - 1]
+            if _is_evidence_boundary(previous):
+                break
+            start -= 1
+            if _starts_with_bullet(lines[start]):
+                break
+
+    end = match_line_index + 1
+    while end < len(lines):
+        following = lines[end]
+        if _is_evidence_boundary(following) or _starts_with_bullet(following):
+            break
+        end += 1
+
+    return _clean_evidence_snippet(lines[start:end])
+
+
 def find_all_keyword_matches(entries: List[Entry], keyword: str) -> List[KeywordMatch]:
-    """Find all occurrences of a keyword (including synonyms) across entries."""
+    """Find every matching evidence paragraph (including synonyms)."""
     matches: List[KeywordMatch] = []
+    seen_paragraphs: Set[Tuple[int, int, str]] = set()
     canonical = keyword.lower()
 
     # Resolve to canonical if this is a variant
@@ -131,31 +246,43 @@ def find_all_keyword_matches(entries: List[Entry], keyword: str) -> List[Keyword
         if not entry_matches:
             continue
 
-        # Find best line-level match for snippet
+        # Keep one citation for every matching source paragraph. A line may
+        # contain overlapping variants (for example, "AWS" and "AWS cloud"),
+        # so use the earliest, most-specific variant without duplicating it.
         found_line = False
         for line_idx, (page_num, line) in enumerate(entry.lines):
             rejoined_line = rejoin_hyphenated_words(line)
             line_matches = match_keyword_in_text(rejoined_line, canonical)
             if line_matches:
-                lines = [line_text for _, line_text in entry.lines]
-                start = max(line_idx - config.SNIPPET_CONTEXT_LINES, 0)
-                end = min(line_idx + config.SNIPPET_CONTEXT_LINES + 2, len(lines))
-                snippet = "\n".join(lines[start:end]).strip()
+                snippet = _evidence_paragraph(entry, line_idx)
+                paragraph_key = (entry_idx, page_num, snippet)
+                if paragraph_key in seen_paragraphs:
+                    found_line = True
+                    continue
+                seen_paragraphs.add(paragraph_key)
                 matches.append(
                     KeywordMatch(
                         page_num=page_num,
                         snippet=snippet,
-                        matched_variant=line_matches[0][0],
+                        matched_variant=min(
+                            line_matches,
+                            key=lambda item: (
+                                item[1].start(),
+                                -(item[1].end() - item[1].start()),
+                                item[0],
+                            ),
+                        )[0],
                         entry_index=entry_idx,
                     )
                 )
                 found_line = True
-                break
 
         if not found_line:
             # Entry-level match but no single-line match (multi-word spanning lines)
             page_num = entry.lines[0][0]
-            snippet = entry.head(3)
+            snippet = _clean_evidence_snippet(
+                [line_text for _, line_text in entry.lines[:3]]
+            )
             matches.append(
                 KeywordMatch(
                     page_num=page_num,
@@ -173,6 +300,7 @@ def find_variant_matches(
 ) -> List[KeywordMatch]:
     """Find literal related-concept variants without treating them as synonyms."""
     matches: List[KeywordMatch] = []
+    seen_paragraphs: Set[Tuple[int, int, str]] = set()
     ordered_variants = sorted(variants, key=len, reverse=True)
     for entry_idx, entry in enumerate(entries):
         for line_idx, (page_num, line) in enumerate(entry.lines):
@@ -184,19 +312,53 @@ def find_variant_matches(
                     break
             if not matched_variant:
                 continue
-            lines = [line_text for _, line_text in entry.lines]
-            start = max(line_idx - config.SNIPPET_CONTEXT_LINES, 0)
-            end = min(line_idx + config.SNIPPET_CONTEXT_LINES + 2, len(lines))
+            snippet = _evidence_paragraph(entry, line_idx)
+            paragraph_key = (entry_idx, page_num, snippet)
+            if paragraph_key in seen_paragraphs:
+                continue
+            seen_paragraphs.add(paragraph_key)
             matches.append(
                 KeywordMatch(
                     page_num=page_num,
-                    snippet="\n".join(lines[start:end]).strip(),
+                    snippet=snippet,
                     matched_variant=matched_variant,
                     entry_index=entry_idx,
                 )
             )
-            break
     return matches
+
+
+def detect_tools_in_entries(entries: List[Entry]) -> List[str]:
+    """Return normalized technologies mentioned in professional experience."""
+    experience_text = rejoin_hyphenated_words(
+        "\n".join(entry.text() for entry in entries)
+    )
+    detected = {
+        canonical
+        for canonical in SYNONYM_MAP
+        if canonical not in _NON_FILTERABLE_TOOL_CONCEPTS
+        and match_keyword_in_text(experience_text, canonical)
+    }
+
+    # Managed Kubernetes services belong under the Kubernetes facet. Provider
+    # implications keep EKS useful under AWS and AKS useful under Azure without
+    # exposing duplicate service chips.
+    if "eks" in detected:
+        detected.add("aws")
+    if "aks" in detected:
+        detected.add("azure")
+    kubernetes_variants = {
+        variant
+        for variants in SEMANTIC_RELATIONSHIPS.get("kubernetes", {}).values()
+        for variant in variants
+    }
+    if any(
+        _build_keyword_pattern(variant).search(experience_text)
+        for variant in kubernetes_variants
+    ):
+        detected.add("kubernetes")
+    detected.difference_update({"aks", "eks"})
+    return sorted({normalize_tool_name(tool) for tool in detected})
 
 
 # ---------------------
@@ -255,7 +417,9 @@ def compute_score(
     breakdown["distinct_devops_keywords"] = distinct_found
 
     # 5. Clarity bonus (0-10)
-    clarity_score = float(config.SCORE_WEIGHTS["no_ambiguity"]) if not ambiguity else 0.0
+    clarity_score = (
+        float(config.SCORE_WEIGHTS["no_ambiguity"]) if not ambiguity else 0.0
+    )
     breakdown["date_clarity"] = 1.0 if not ambiguity else 0.0
 
     total = int(
@@ -365,7 +529,9 @@ def build_verdict_reasons(result: Dict[str, object]) -> List[str]:
         reasons.append("Missing required preferred program")
 
     if config.MIN_SCORE is not None and int(result.get("score", 0)) < config.MIN_SCORE:
-        reasons.append(f"Score {result.get('score')} below threshold ({config.MIN_SCORE})")
+        reasons.append(
+            f"Score {result.get('score')} below threshold ({config.MIN_SCORE})"
+        )
 
     if not reasons:
         reasons.append("All criteria met")
@@ -387,8 +553,10 @@ def normalize_excel_col_name(keyword: str) -> str:
 def screen_cv(cv_path: Path) -> Dict[str, object]:
     if cv_path.suffix.lower() == ".docx":
         pages, used_ocr = extract_text_from_docx(cv_path)
+        multi_column_layout = False
     else:
         pages, used_ocr = extract_text_by_page(cv_path)
+        multi_column_layout = pdf_has_multi_column_layout(cv_path)
     full_text = "\n".join(pages)
     exp_entries = extract_experience_entries(pages)
 
@@ -448,11 +616,15 @@ def screen_cv(cv_path: Path) -> Dict[str, object]:
 
     roles, devops_months, date_ambiguity = compute_devops_roles(filtered_entries)
     devops_years = months_to_years(devops_months)
+    layout_ambiguity = bool(
+        multi_column_layout
+        and has_experience_layout_anomaly(filtered_entries, roles)
+    )
 
     semantic_ambiguity = any(
         bool(detail["needs_review"]) for detail in required_evidence_details.values()
     )
-    ambiguity = bool(date_ambiguity or semantic_ambiguity)
+    ambiguity = bool(date_ambiguity or semantic_ambiguity or layout_ambiguity)
     ambiguity_reasons: List[str] = []
     if ambiguity and date_ambiguity:
         ambiguity_reasons.append(
@@ -465,6 +637,10 @@ def screen_cv(cv_path: Path) -> Dict[str, object]:
                     f"Related term '{detail['matched_term']}' may satisfy "
                     f"'{keyword}', but demonstrated usage is unclear"
                 )
+    if ambiguity and layout_ambiguity:
+        ambiguity_reasons.append(
+            "Multi-column CV extraction produced an unreliable experience reading order"
+        )
 
     devops_pass = (devops_years >= config.MIN_DEVOPS_YEARS) and (not ambiguity)
     passed = all_required_found and devops_pass
@@ -504,6 +680,7 @@ def screen_cv(cv_path: Path) -> Dict[str, object]:
 
     experience_entries_found = int(len(filtered_entries))
     experience_text = "\n\n".join(entry.text() for entry in filtered_entries)
+    detected_tools = detect_tools_in_entries(filtered_entries)
 
     return {
         "file": cv_path.name,
@@ -520,10 +697,12 @@ def screen_cv(cv_path: Path) -> Dict[str, object]:
         "ambiguity": ambiguity,
         "date_ambiguity": date_ambiguity,
         "semantic_ambiguity": semantic_ambiguity,
+        "layout_ambiguity": layout_ambiguity,
         "ambiguity_reasons": ambiguity_reasons,
         "semantic_relationships_version": SEMANTIC_RELATIONSHIPS_VERSION,
         "devops_pass": devops_pass,
         "experience_entries_found": experience_entries_found,
+        "detected_tools": detected_tools,
         "score": scoring.total_score,
         "score_breakdown": scoring.breakdown,
         "_full_text": full_text,
@@ -538,7 +717,7 @@ def screen_cv(cv_path: Path) -> Dict[str, object]:
 
 
 def build_dynamic_headers() -> List[str]:
-    headers: List[str] = ["file", "result", "score"]
+    headers: List[str] = ["file", "result", "score", "detected_tools"]
     for kw in sorted(config.REQUIRED_EXPERIENCE_KEYWORDS):
         base = normalize_excel_col_name(kw)
         headers.extend([f"{base}_found", f"{base}_page", f"{base}_snippet"])
@@ -565,6 +744,13 @@ def row_for_result(r: Dict[str, object], headers: List[str]) -> List[object]:
             row.append(result_label)
         elif h == "score":
             row.append(r.get("score", 0))
+        elif h == "detected_tools":
+            tools = r.get("detected_tools", [])
+            row.append(
+                "; ".join(str(tool) for tool in tools)
+                if isinstance(tools, list)
+                else ""
+            )
         elif h.endswith("_found") and h not in {"devops_pass"}:
             key = f"kw_found__{h[:-6]}"
             row.append(bool(r.get(key, False)))
