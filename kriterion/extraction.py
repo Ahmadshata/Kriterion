@@ -54,6 +54,14 @@ def extract_text_from_docx(docx_path: Path) -> Tuple[List[str], bool]:
     return [full_text], False
 
 
+def pdf_has_multi_column_layout(pdf_path: Path) -> bool:
+    """Return whether the PDF geometry indicates a multi-column reading order."""
+    if not pdf_path.is_file():
+        return False
+    with fitz.open(pdf_path) as doc:
+        return _is_multi_column(doc)
+
+
 def _extract_with_blocks(doc: fitz.Document) -> List[str]:
     """Use get_text('blocks') sorted by (y_band, x) for multi-column layouts."""
     pages: List[str] = []

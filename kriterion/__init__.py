@@ -35,6 +35,7 @@ from kriterion.extraction import (
     extract_text_by_page,
     extract_text_from_docx,
     iter_lines_with_pages,
+    pdf_has_multi_column_layout,
     try_ocr,
 )
 from kriterion.experience import (
@@ -43,6 +44,7 @@ from kriterion.experience import (
     capture_experience_by_heading,
     compute_devops_roles,
     extract_experience_entries,
+    has_experience_layout_anomaly,
     is_devops_related,
     is_education_program,
     is_experience_entry,

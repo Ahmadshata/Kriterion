@@ -33,6 +33,7 @@ def _serialize_result(r: Dict[str, object]) -> Dict[str, object]:
             out[k] = [
                 {
                     "title": role.title,
+                    "company": role.company,
                     "start": role.start.isoformat() if role.start else None,
                     "end": role.end.isoformat() if role.end else None,
                     "months_added": role.months_added,
@@ -70,6 +71,7 @@ def _deserialize_result(data: Dict[str, object]) -> Dict[str, object]:
                     start=start,
                     end=end,
                     months_added=rd["months_added"],
+                    company=rd.get("company", ""),
                 )
             )
         out["devops_roles"] = roles
