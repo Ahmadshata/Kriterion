@@ -104,6 +104,11 @@ def main() -> None:
         action="store_true",
         help="Do not automatically send ambiguous CVs to Copilot when the dashboard opens",
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Rescreen every CV and discard saved AI reviews for this run",
+    )
 
     args = parser.parse_args()
 
@@ -144,7 +149,13 @@ def main() -> None:
     pdfs = sorted(p for p in folder.iterdir() if p.suffix.lower() in (".pdf", ".docx"))
     pdf_names = {p.name for p in pdfs}
 
-    manifest = _load_manifest(outdir)
+    previous_manifest = _load_manifest(outdir)
+    manifest = {} if args.no_cache else previous_manifest
+    if args.no_cache:
+        print(
+            "  Cache: disabled (full rescreen and fresh AI review state)",
+            file=sys.stderr,
+        )
 
     cached_results: List[Dict[str, object]] = []
     cached_names: Set[str] = set()
@@ -160,7 +171,7 @@ def main() -> None:
         else:
             to_screen.append(pdf)
 
-    removed_names = set(manifest.keys()) - pdf_names
+    removed_names = set(previous_manifest.keys()) - pdf_names
     for removed in removed_names:
         _remove_from_buckets(removed, outdir)
         del manifest[removed]

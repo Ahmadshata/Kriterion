@@ -46,6 +46,7 @@ class KriterionLauncherTests(unittest.TestCase):
                 "--output-dir",
                 "./reports",
                 "--no-open",
+                "--no-cache",
                 "--min-score",
                 "80",
             ),
@@ -57,8 +58,23 @@ class KriterionLauncherTests(unittest.TestCase):
                 "--output-dir",
                 "./reports",
                 "--no-open",
+                "--no-cache",
                 "--min-score",
                 "80",
+            ],
+        )
+
+    def test_no_cache_is_forwarded_to_the_screening_cli(self) -> None:
+        self.assertEqual(
+            self.invoke("--no-cache"),
+            [
+                str(self.screening_script),
+                "./cvs",
+                "--profile",
+                "./profiles/profile.yaml",
+                "--output-dir",
+                ".",
+                "--no-cache",
             ],
         )
 

@@ -285,6 +285,12 @@ Cached: 42 | New/Changed: 5 | Removed: 0
 
 Delete `manifest.json` to force a full re-run.
 
+Or bypass both the screening manifest and saved AI-review decisions for one run:
+
+```bash
+./kriterion.sh --no-cache
+```
+
 ---
 
 ## Output Structure
@@ -323,6 +329,9 @@ For users who prefer the command line:
 # Keep the server in the foreground without opening a browser
 ./kriterion.sh --no-open
 
+# Rescreen every CV and regenerate ambiguous AI reviews
+./kriterion.sh --no-cache
+
 # Direct Python with flags
 python3 kriterion.py ./cvs --profile profiles/profile.yaml --output-dir ./out
 python3 kriterion.py ./cvs --min-devops-years 3 --required-keyword kubernetes --required-keyword aws
@@ -340,6 +349,7 @@ python3 kriterion.py ./cvs --profile profiles/profile.yaml --min-score 70 -v
 | `--no-serve` | Generate static output without the AI server | Off |
 | `--no-open` | Run the foreground server without opening a browser | Off |
 | `--no-auto-ai` | Require manual AI Verdict requests for ambiguous CVs | Off |
+| `--no-cache` | Rescreen every CV and discard saved AI reviews and decisions | Off |
 | `-v` | Verbose scoring output | Off |
 
 `kriterion.sh` is a thin launcher: it does not install dependencies, activate an environment, inspect the profile, or prompt for input. Run `./setup.sh` separately when installation is needed. Additional options are forwarded to `kriterion.py`.
