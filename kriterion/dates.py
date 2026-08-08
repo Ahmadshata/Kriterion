@@ -96,6 +96,19 @@ def normalize_date_text(text: str) -> str:
     # "Apr, 2024" -> "Apr 2024"
     t = re.sub(r"(?i)\b([A-Za-z]{3,9})\s*,\s*(\d{4})\b", r"\1 \2", t)
 
+    # Some CVs reverse the second token: "Jun 2019 - 2021 Jun".
+    # Put only recognized month names back into the conventional order.
+    month_names = (
+        r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+        r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+        r"nov(?:ember)?|dec(?:ember)?"
+    )
+    t = re.sub(
+        rf"(?i)\b(\d{{4}})\s+({month_names})\b",
+        r"\2 \1",
+        t,
+    )
+
     # "Mar-2024" or "Mar/2024" -> "Mar 2024" (but NOT "2020-01" which is ISO)
     t = re.sub(r"(?i)\b([A-Za-z]{3,9})\s*[-/]\s*(\d{4})\b", r"\1 \2", t)
 
