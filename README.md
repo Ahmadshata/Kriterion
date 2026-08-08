@@ -35,6 +35,18 @@
 
 ---
 
+## Why The Name Kriterion?
+
+**Kriterion** comes from the Ancient Greek
+[*kritērion* (κριτήριον)](https://www.merriam-webster.com/dictionary/criterion):
+a standard, test, or means by which something is judged. It is also the origin
+of the English word **criterion**.
+
+The name reflects how Kriterion works. It evaluates every candidate against
+explicit hiring criteria, shows the evidence behind each result, and separates
+clear decisions from cases that still require human judgment.
+
+
 ## AI Usage
 
 Kriterion integrates with **GitHub Copilot** — just talk to it in natural language. Open Copilot Chat in VS Code and use `@kriterion`:
@@ -105,13 +117,17 @@ The dashboard opens automatically in your browser. Kriterion then runs as a norm
 
 ## How It Works
 
+<p align="center">
+  <img src="assets/flow.png" alt="Kriterion" width=900">
+</p>
+
 ```text
-┌─────────────┐     ┌──────────────┐     ┌──────────────────┐     ┌────────────────┐
-│  CV Folder  │────▶│  Text Extrac │────▶│  Screening Engine │────▶│  HTML Dashboard│
-│  PDF / DOCX │     │  PyMuPDF     │     │  Date Parsing     │     │  Excel / CSV   │
-│             │     │  python-docx │     │  Keyword Matching │     │  Markdown      │
-│             │     │  OCR (opt)   │     │  Scoring + Verdict│     │                │
-└─────────────┘     └──────────────┘     └──────────────────┘     └────────────────┘
+┌─────────────┐     ┌───────────────┐     ┌────────────────────┐     ┌────────────────┐
+│             │────▶│  Text Extract │────▶│  Screening Engine  │────▶│ HTML Dashboard │
+│  CV Folder  │     │  PyMuPDF      │     │  Date Parsing      │     │ Excel / CSV    │
+│  PDF / DOCX │     │  python-docx  │     │  Keyword Matching  │     │ Markdown       │
+│             │     │  OCR (opt)    │     │  Scoring + Verdict │     │                │
+└─────────────┘     └───────────────┘     └────────────────────┘     └────────────────┘
 ```
 
 | Step | What Happens |
