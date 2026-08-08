@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import math
 import re
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -21,9 +22,118 @@ from kriterion.scoring import (
     excel_result_label,
     row_for_result,
 )
+from kriterion.synonyms import normalize_tool_name
 
 
-_COPILOT_ICON_SVG = """<svg class="copilot-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M23.922 16.992c-.861 1.495-5.859 5.023-11.922 5.023-6.063 0-11.061-3.528-11.922-5.023A.641.641 0 0 1 0 16.736v-2.869c0-.075.018-.149.053-.22.372-.935 1.347-2.292 2.605-2.656.167-.429.414-1.055.644-1.517a10.195 10.195 0 0 1-.052-1.086c0-1.331.282-2.499 1.132-3.368.397-.406.89-.717 1.474-.952 1.399-1.136 3.392-2.093 6.122-2.093 2.731 0 4.767.957 6.166 2.093.584.235 1.077.546 1.474.952.85.869 1.132 2.037 1.132 3.368 0 .368-.014.733-.052 1.086.23.462.477 1.088.644 1.517 1.258.364 2.233 1.721 2.605 2.656.035.071.053.145.053.22v2.869a.641.641 0 0 1-.078.256ZM12.172 11h-.344a4.323 4.323 0 0 1-.355.508C10.703 12.455 9.555 13 7.965 13c-1.725 0-2.989-.359-3.782-1.259a2.005 2.005 0 0 1-.085-.104L4 11.741v6.585c1.435.779 4.514 2.179 8 2.179 3.486 0 6.565-1.4 8-2.179v-6.585l-.098-.104a2.005 2.005 0 0 1-.085.104c-.793.9-2.057 1.259-3.782 1.259-1.59 0-2.738-.545-3.508-1.492a4.323 4.323 0 0 1-.355-.508Zm.641-2.935c.136 1.057.403 1.913.878 2.497.442.544 1.134.938 2.344.938 1.573 0 2.292-.337 2.657-.751.384-.435.558-1.15.558-2.361 0-1.14-.243-1.847-.705-2.319-.477-.488-1.319-.862-2.824-1.025-1.487-.161-2.192.138-2.533.529-.269.307-.437.808-.438 1.578v.021c0 .265.021.562.063.893Zm-1.626 0c.042-.331.063-.628.063-.894v-.02c-.001-.77-.169-1.271-.438-1.578-.341-.391-1.046-.69-2.533-.529-1.505.163-2.347.537-2.824 1.025-.462.472-.705 1.179-.705 2.319 0 1.211.175 1.926.558 2.361.365.414 1.084.751 2.657.751 1.21 0 1.902-.394 2.344-.938.475-.584.742-1.44.878-2.497Z"/><path d="M14.5 14.25a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0v-2a1 1 0 0 1 1-1Zm-5 0a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0v-2a1 1 0 0 1 1-1Z"/></svg>"""
+_COPILOT_ICON_SOURCE = (
+    Path(__file__).resolve().parent.parent / "assets" / "GitHub-Copilot-Blink.gif"
+)
+_COPILOT_ICON_FILENAME = _COPILOT_ICON_SOURCE.name
+
+
+_TOOL_ICON_SOURCE = Path(__file__).resolve().parent.parent / "assets" / "tools"
+_TOOL_ICON_ALIASES = {
+    "elastic": "elk",
+}
+_TOOL_ICON_ENLARGED = {"docker", "zabbix"}
+_TOOL_LABELS = {
+    "argocd": "Argo CD",
+    "aws": "AWS",
+    "azure devops": "Azure DevOps",
+    "gcp": "GCP",
+    "gitlab": "GitLab",
+    "github actions": "GitHub Actions",
+    "kubernetes": "Kubernetes",
+    "opentelemetry": "OpenTelemetry",
+}
+
+
+def _tool_slug(tool_name: str) -> str:
+    canonical = normalize_tool_name(tool_name)
+    return re.sub(r"[^a-z0-9]+", "_", canonical).strip("_")
+
+
+def _tool_icon_slug(tool_name: str) -> str:
+    """Resolve icons, preferring concatenated multi-word filenames."""
+    canonical = normalize_tool_name(tool_name)
+    compact = re.sub(r"[^a-z0-9]+", "", canonical)
+    candidates = [
+        _TOOL_ICON_ALIASES.get(canonical, ""),
+        compact,
+        _tool_slug(canonical),
+    ]
+    icon_files = {
+        path.stem.lower(): path.stem.lower()
+        for path in _TOOL_ICON_SOURCE.glob("*.png")
+    }
+    for candidate in candidates:
+        if candidate and candidate.lower() in icon_files:
+            return icon_files[candidate.lower()]
+    return ""
+
+
+def _tool_icon_images_html(tool_name: str) -> str:
+    """Render theme-aware icon images when a -white dark-mode asset exists."""
+    slug = _tool_icon_slug(tool_name)
+    if not slug:
+        return ""
+    enlarged_class = (
+        f" tool-icon-enlarged tool-icon-{slug}"
+        if slug in _TOOL_ICON_ENLARGED
+        else ""
+    )
+    icon_files = {
+        path.stem.lower() for path in _TOOL_ICON_SOURCE.glob("*.png")
+    }
+    white_slug = f"{slug}-white"
+    if white_slug in icon_files:
+        return (
+            f'<img class="tool-icon-light{enlarged_class}" src="tools/{_html_escape(slug)}.png" alt="">'
+            f'<img class="tool-icon-dark{enlarged_class}" src="tools/{_html_escape(white_slug)}.png" alt="">'
+        )
+    class_attr = f' class="{enlarged_class.strip()}"' if enlarged_class else ""
+    return f'<img{class_attr} src="tools/{_html_escape(slug)}.png" alt="">'
+
+
+def _tool_icon_html(tool_name: str) -> str:
+    """Render a configured tool icon, with a readable fallback when unavailable."""
+    images = _tool_icon_images_html(tool_name)
+    if images:
+        return (
+            '<span class="kw-tool-icon" aria-hidden="true">'
+            f"{images}"
+            "</span>"
+        )
+    fallback = "".join(part[0] for part in tool_name.split() if part)[:2].upper() or "?"
+    return (
+        '<span class="kw-tool-icon kw-tool-icon-fallback" aria-hidden="true">'
+        f"{_html_escape(fallback)}</span>"
+    )
+
+
+def _tool_label(tool_name: str) -> str:
+    canonical = normalize_tool_name(tool_name)
+    return _TOOL_LABELS.get(canonical, canonical.title())
+
+
+def _tool_filter_icon_html(tool_name: str) -> str:
+    return _tool_icon_images_html(tool_name)
+
+
+def _role_label(role: Role) -> str:
+    """Return the career-history label shown in text and HTML reports."""
+    if role.company:
+        return f"{role.title} @ {role.company}"
+    return role.title
+
+
+def _copy_tool_icons(output_dir: Path) -> None:
+    """Copy report tool icons using lowercase, URL-safe filenames."""
+    if _TOOL_ICON_SOURCE.is_dir():
+        destination = output_dir / "tools"
+        destination.mkdir(parents=True, exist_ok=True)
+        for icon_path in _TOOL_ICON_SOURCE.glob("*.png"):
+            shutil.copy2(icon_path, destination / icon_path.name.lower())
 
 
 def write_csv(results: List[Dict[str, object]], output_path: Path) -> None:
@@ -58,11 +168,18 @@ def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
     lines.append(f"- Minimum DevOps experience: {config.MIN_DEVOPS_YEARS} years\n")
 
     for r in results:
+        layout_ambiguity = bool(r.get("layout_ambiguity"))
         lines.append(f"## {r['file']}")
         lines.append(f"- Result: {excel_result_label(r)}")
         lines.append(f"- Confidence Score: {r.get('score', 0)}/100")
         if r["used_ocr"]:
             lines.append("- Note: OCR fallback used for text extraction.")
+        detected_tools = r.get("detected_tools", [])
+        if isinstance(detected_tools, list) and detected_tools:
+            lines.append(
+                "- Detected tools in Experience: "
+                + ", ".join(_tool_label(str(tool)) for tool in detected_tools)
+            )
 
         required_evidence: Dict[str, Optional[Tuple[int, str]]] = r["required_evidence"]  # type: ignore
         evidence_details: Dict[str, Dict[str, object]] = r.get(
@@ -70,17 +187,32 @@ def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
         )  # type: ignore
         lines.append("- Required keywords evidence (Experience):")
         for kw in sorted(config.REQUIRED_EXPERIENCE_KEYWORDS):
+            if layout_ambiguity:
+                lines.append(
+                    f"  - {kw}: Withheld — multi-column reading order requires review"
+                )
+                continue
             ev = required_evidence.get(kw.lower())
             detail = evidence_details.get(kw.lower(), {})
             if ev:
                 relationship = str(detail.get("relationship", "direct")).replace(
                     "_", " "
                 )
-                matched_term = str(detail.get("matched_term", kw))
+                citations = _evidence_citations(detail, ev, kw)
                 lines.append(
-                    f"  - {kw}: Yes ({relationship}; matched {matched_term}; page {ev[0]})"
+                    f"  - {kw}: Yes ({relationship}; {len(citations)} "
+                    f"citation{'s' if len(citations) != 1 else ''})"
                 )
-                lines.append("    Snippet:\n\n    " + ev[1].replace("\n", "\n    "))
+                for citation_index, citation in enumerate(citations, start=1):
+                    matched_term = str(citation.get("matched_term", kw))
+                    lines.append(
+                        f"    - Citation {citation_index}: matched {matched_term}; "
+                        f"page {citation['page']}"
+                    )
+                    snippet = str(citation.get("snippet", ""))
+                    lines.append(
+                        "      Snippet:\n\n      " + snippet.replace("\n", "\n      ")
+                    )
             elif detail.get("needs_review"):
                 lines.append(
                     f"  - {kw}: Ambiguous related term "
@@ -89,9 +221,14 @@ def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
             else:
                 lines.append(f"  - {kw}: No")
 
-        lines.append(
-            f"- DevOps years counted (unique, overlap-safe): {r['devops_years']}"
-        )
+        if layout_ambiguity:
+            lines.append(
+                "- DevOps years counted: Withheld — extraction layout requires review"
+            )
+        else:
+            lines.append(
+                f"- DevOps years counted (unique, overlap-safe): {r['devops_years']}"
+            )
         lines.append(
             f"- DevOps pass (>= {config.MIN_DEVOPS_YEARS} years AND no ambiguity): {'Yes' if r['devops_pass'] else 'No'}"
         )
@@ -99,14 +236,24 @@ def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
         lines.append(
             f"- Semantic ambiguity: {'Yes' if r.get('semantic_ambiguity') else 'No'}"
         )
+        lines.append(
+            f"- Extraction-layout ambiguity: {'Yes' if r.get('layout_ambiguity') else 'No'}"
+        )
 
         roles: List[Role] = r["devops_roles"]  # type: ignore
-        if roles:
+        if layout_ambiguity:
+            lines.append(
+                "- DevOps roles counted: Withheld — extraction layout requires review"
+            )
+        elif roles:
             lines.append("- DevOps roles counted:")
             for role in roles:
                 role_years = months_to_years(role.months_added)
+                role_period = (
+                    f"{format_date(role.start)} to {format_date(role.end)}"
+                )
                 lines.append(
-                    f"  - {role.title} ({format_date(role.start)} to {format_date(role.end)}): {role_years} years"
+                    f"  - {_role_label(role)} ({role_period}): {role_years} years"
                 )
         else:
             lines.append("- DevOps roles counted: None")
@@ -153,6 +300,34 @@ def _highlight_term(escaped_snippet: str, matched_term: str) -> str:
     )
 
 
+def _evidence_citations(
+    detail: Dict[str, object],
+    primary: Optional[Tuple[int, str]],
+    default_term: str,
+) -> List[Dict[str, object]]:
+    """Return all citations, falling back to legacy single-citation results."""
+    citations = detail.get("citations")
+    if isinstance(citations, list):
+        valid = [
+            citation
+            for citation in citations
+            if isinstance(citation, dict)
+            and citation.get("page") is not None
+            and str(citation.get("snippet", "")).strip()
+        ]
+        if valid:
+            return valid
+    if primary:
+        return [
+            {
+                "page": primary[0],
+                "snippet": primary[1],
+                "matched_term": detail.get("matched_term", default_term),
+            }
+        ]
+    return []
+
+
 def write_html_report(
     results: List[Dict[str, object]],
     output_path: Path,
@@ -161,6 +336,9 @@ def write_html_report(
     auto_ai_review: bool = True,
     profile: Optional[Dict[str, object]] = None,
 ) -> None:
+    _copy_tool_icons(output_path.parent)
+    if _COPILOT_ICON_SOURCE.is_file():
+        shutil.copy2(_COPILOT_ICON_SOURCE, output_path.parent / _COPILOT_ICON_FILENAME)
     total = len(results)
     passed = sum(
         1 for r in results if bool(r["passed"]) and not bool(r.get("ambiguity"))
@@ -177,6 +355,51 @@ def write_html_report(
             "missing": total - found,
             "pct": round(found / max(total, 1) * 100),
         }
+
+    tool_counts: Dict[str, int] = {}
+    for result in results:
+        detected_tools = result.get("detected_tools", [])
+        if not isinstance(detected_tools, list):
+            continue
+        candidate_tools = {
+            normalize_tool_name(str(value))
+            for value in detected_tools
+            if str(value).strip()
+        }
+        for tool in candidate_tools:
+            tool_counts[tool] = tool_counts.get(tool, 0) + 1
+    required_tool_names = {
+        normalize_tool_name(str(tool))
+        for tool in config.REQUIRED_EXPERIENCE_KEYWORDS
+    }
+    sorted_tool_counts = sorted(
+        tool_counts.items(),
+        key=lambda item: (
+            0 if item[0].lower() in required_tool_names else 1,
+            -item[1],
+            _tool_label(item[0]).lower(),
+        ),
+    )
+    tool_filter_chips = "".join(
+        f'<button type="button" class="tool-filter-chip" '
+        f'data-tool="{_html_escape(_tool_slug(tool))}" aria-pressed="false" '
+        f'aria-label="Filter by {_html_escape(_tool_label(tool))}">'
+        f'{_tool_filter_icon_html(tool)}<span>{_html_escape(_tool_label(tool))}</span>'
+        f'<strong>{count}</strong></button>'
+        for tool, count in sorted_tool_counts
+    )
+    tool_filter_panel = (
+        f"""<section class="tool-filter-panel" aria-labelledby="toolFilterTitle">
+            <div class="tool-filter-head">
+                <div><span class="tool-filter-kicker">Experience technology index</span><h2 id="toolFilterTitle">Filter candidates by tools</h2><p>Select multiple tools to require every selected tool.</p></div>
+                <button type="button" class="tool-filter-clear" id="toolFilterClear" disabled>Clear tools</button>
+            </div>
+            <div class="tool-filter-chips" aria-label="Tool filters">{tool_filter_chips}</div>
+            <div class="tool-filter-summary" id="toolFilterSummary" aria-live="polite">Showing all {total} candidates</div>
+        </section>"""
+        if tool_filter_chips
+        else ""
+    )
 
     reason_counts: Dict[str, int] = {}
     for r in results:
@@ -195,6 +418,10 @@ def write_html_report(
         if r.get("semantic_ambiguity"):
             reason_counts["Semantic ambiguity"] = (
                 reason_counts.get("Semantic ambiguity", 0) + 1
+            )
+        if r.get("layout_ambiguity"):
+            reason_counts["Extraction-layout ambiguity"] = (
+                reason_counts.get("Extraction-layout ambiguity", 0) + 1
             )
         if r.get("excluded_company"):
             reason_counts["Excluded company"] = (
@@ -224,9 +451,7 @@ def write_html_report(
         color = (
             "var(--green)"
             if pct >= 70
-            else "var(--amber)"
-            if pct >= 40
-            else "var(--red)"
+            else "var(--amber)" if pct >= 40 else "var(--red)"
         )
         kw_bars_html += f'<div class="chart-row"><span class="chart-label">{_html_escape(kw)}</span><div class="chart-bar-track"><div class="chart-bar-fill" style="width:{pct}%;background:{color}"></div></div><span class="chart-value">{pct}%</span></div>'
 
@@ -243,13 +468,35 @@ def write_html_report(
         kw_found = sum(1 for v in r["required_evidence"].values() if v is not None)  # type: ignore
         kw_total = len(config.REQUIRED_EXPERIENCE_KEYWORDS)
         reasons = build_verdict_reasons(r)
+        layout_ambiguity = bool(r.get("layout_ambiguity"))
+        table_years = (
+            "Review"
+            if layout_ambiguity
+            else f'{math.ceil(r["devops_years"] * 2) / 2} yr'
+        )
+        table_requirements = (
+            "Review" if layout_ambiguity else f"{kw_found}/{kw_total}"
+        )
 
-        table_rows += f"""<tr class="data-row row-{status_class}" data-status="{status_class}" data-idx="{idx}" role="button" tabindex="0" aria-expanded="false" aria-label="Review candidate {_html_escape(str(r["file"]))}">
+        detected_tools = [] if layout_ambiguity else r.get("detected_tools", [])
+        normalized_tools = (
+            {
+                normalize_tool_name(str(tool))
+                for tool in detected_tools
+                if str(tool).strip()
+            }
+            if isinstance(detected_tools, list)
+            else set()
+        )
+        tool_slugs = " ".join(
+            _tool_slug(tool) for tool in sorted(normalized_tools)
+        )
+        table_rows += f"""<tr class="data-row row-{status_class}" data-status="{status_class}" data-tools="{_html_escape(tool_slugs)}" data-idx="{idx}" role="button" tabindex="0" aria-expanded="false" aria-label="Review candidate {_html_escape(str(r["file"]))}">
             <td class="cell-name">{_file_link(str(r["file"]))}</td>
             <td><span class="pill pill-{status_class}">{result_label}</span></td>
             <td><div class="score-bar-cell"><div class="score-bar-track"><div class="score-bar-fill score-fill-{status_class}" style="width:{score}%"></div></div><span class="score-num">{score}</span></div></td>
-            <td>{math.ceil(r["devops_years"] * 2) / 2} yr</td>
-            <td>{kw_found}/{kw_total}</td>
+            <td>{table_years}</td>
+            <td>{table_requirements}</td>
         </tr>"""
 
         kw_items = ""
@@ -260,40 +507,61 @@ def write_html_report(
         for kw in sorted(config.REQUIRED_EXPERIENCE_KEYWORDS):
             ev = required_evidence.get(kw.lower())
             detail = evidence_details.get(kw.lower(), {})
+            tool_heading = (
+                '<div class="kw-title">'
+                f"{_tool_icon_html(kw)}"
+                '<div class="kw-title-copy">'
+                f'<span class="kw-name">{_html_escape(kw)}</span>'
+                '<span class="kw-kicker">Required experience</span>'
+                "</div></div>"
+            )
+            if layout_ambiguity:
+                kw_items += f"""<div class="kw-item kw-review">
+                    <div class="kw-header">{tool_heading}<span class="kw-badge review">AI review</span></div>
+                    <p class="empty-state">Deterministic citations withheld because the multi-column reading order is unreliable.</p>
+                </div>"""
+                continue
             if ev:
-                snippet = _html_escape(ev[1][:200])
                 relationship = str(detail.get("relationship", "direct"))
-                matched_term = str(detail.get("matched_term", kw))
+                citations = _evidence_citations(detail, ev, kw)
+                citation_count = len(citations)
                 evidence_label = (
-                    f"{relationship.replace('_', ' ')} · p.{ev[0]}"
-                    if relationship != "direct"
-                    else f"direct · p.{ev[0]}"
+                    f"{relationship.replace('_', ' ')} · {citation_count} "
+                    f"citation{'s' if citation_count != 1 else ''}"
                 )
-                snippet_hl = _highlight_term(snippet, matched_term)
+                citation_items = ""
+                for citation_index, citation in enumerate(citations, start=1):
+                    matched_term = str(citation.get("matched_term", kw))
+                    snippet = _html_escape(str(citation.get("snippet", "")))
+                    snippet_hl = _highlight_term(snippet, matched_term)
+                    citation_items += f"""<article class="kw-citation">
+                        <div class="kw-citation-head"><span class="kw-citation-index">Evidence {citation_index:02d}</span><span class="kw-relation">Page {_html_escape(str(citation['page']))} · Matched: {_html_escape(matched_term)}</span></div>
+                        <pre class="kw-snippet">{snippet_hl}</pre>
+                    </article>"""
                 kw_items += f"""<div class="kw-item kw-found">
-                    <div class="kw-header"><span class="kw-name">{_html_escape(kw)}</span><span class="kw-badge found">{_html_escape(evidence_label)}</span></div>
-                    <div class="kw-relation">Matched: {_html_escape(matched_term)}</div>
-                    <pre class="kw-snippet">{snippet_hl}</pre>
+                    <div class="kw-header">{tool_heading}<span class="kw-badge found">{_html_escape(evidence_label)}</span></div>
+                    <div class="kw-citations" aria-label="{citation_count} evidence citations">{citation_items}</div>
                 </div>"""
             elif detail.get("needs_review"):
                 matched_term = _html_escape(str(detail.get("matched_term", "")))
-                snippet = _html_escape(str(detail.get("snippet", ""))[:200])
+                snippet = _html_escape(str(detail.get("snippet", "")))
                 snippet_hl = _highlight_term(
                     snippet, str(detail.get("matched_term", ""))
                 )
                 kw_items += f"""<div class="kw-item kw-review">
-                    <div class="kw-header"><span class="kw-name">{_html_escape(kw)}</span><span class="kw-badge review">review needed</span></div>
-                    <div class="kw-relation">Related term: {matched_term}</div>
-                    <pre class="kw-snippet">{snippet_hl}</pre>
+                    <div class="kw-header">{tool_heading}<span class="kw-badge review">review needed</span></div>
+                    <article class="kw-citation kw-citation-review"><div class="kw-citation-head"><span class="kw-citation-index">Related evidence</span><span class="kw-relation">Matched: {matched_term}</span></div><pre class="kw-snippet">{snippet_hl}</pre></article>
                 </div>"""
             else:
                 kw_items += f"""<div class="kw-item kw-missing">
-                    <div class="kw-header"><span class="kw-name">{_html_escape(kw)}</span><span class="kw-badge missing">missing</span></div>
+                    <div class="kw-header">{tool_heading}<span class="kw-badge missing">missing</span></div>
                 </div>"""
 
         roles: List[Role] = r["devops_roles"]  # type: ignore
         exp_items = ""
-        if roles:
+        if layout_ambiguity:
+            exp_items = '<p class="empty-state">Career history withheld because the multi-column reading order is unreliable. Use the AI recommendation and verify against the original CV.</p>'
+        elif roles:
             for role_index, role in enumerate(roles):
                 ry = months_to_years(role.months_added)
                 has_next_role = role_index < len(roles) - 1
@@ -310,7 +578,7 @@ def write_html_report(
                 exp_items += f"""<div class="exp-item{connected_class}">
                     <div class="exp-dot"></div>
                     <div class="exp-content">
-                        <div class="exp-title">{_html_escape(role.title)}</div>
+                        <div class="exp-title">{_html_escape(_role_label(role))}</div>
                         <div class="exp-meta">{format_date(role.start)} — {format_date(role.end)} &middot; {ry} yr</div>
                     </div>
                     {connector}
@@ -323,6 +591,8 @@ def write_html_report(
         if edu_entries:
             for e in edu_entries:
                 flags_items += f'<div class="flag-item flag-info"><span class="flag-icon">\U0001f393</span><span>Listed as experience but classified as education: {_html_escape(e)}</span></div>'
+        if r.get("layout_ambiguity"):
+            flags_items += '<div class="flag-item flag-info"><span class="flag-icon">⚠</span><span>Multi-column extraction produced an unreliable experience reading order; AI-assisted review and a human decision are required.</span></div>'
         if r.get("excluded_company"):
             flags_items += f'<div class="flag-item flag-danger"><span class="flag-icon">\U0001f6ab</span><span>Excluded company: {_html_escape(str(r["excluded_company"]))}</span></div>'
         if r.get("excluded_university"):
@@ -349,7 +619,7 @@ def write_html_report(
         if bool(r.get("ambiguity")):
             ai_review_section = f"""<section class="review-section ai-review-section">
                 <div class="review-section-head">
-                    <div class="section-icon section-icon-ai">{_COPILOT_ICON_SVG}</div>
+                    <div class="section-icon section-icon-ai"><img class="copilot-icon" src="{_COPILOT_ICON_FILENAME}" alt=""></div>
                     <div>
                         <h4>AI recommendation</h4>
                         <p>A second opinion for the unresolved evidence</p>
@@ -371,6 +641,24 @@ def write_html_report(
                 else "Does not meet one or more screening requirements"
             )
         )
+        years_display = (
+            "Review"
+            if layout_ambiguity
+            else str(math.ceil(r["devops_years"] * 2) / 2)
+        )
+        requirements_display = (
+            "Review" if layout_ambiguity else f"{kw_found}/{kw_total}"
+        )
+        evidence_summary = (
+            "Deterministic citations withheld pending AI and human review"
+            if layout_ambiguity
+            else f"{kw_found} of {kw_total} required technologies confirmed in work experience"
+        )
+        career_summary = (
+            "Extracted timeline requires AI and human review"
+            if layout_ambiguity
+            else f'{len(roles)} qualifying role{"s" if len(roles) != 1 else ""} used in the calculation'
+        )
 
         table_rows += f"""<tr class="detail-row" data-idx="{idx}" data-status="{status_class}" style="display:none">
             <td colspan="5">
@@ -386,8 +674,8 @@ def write_html_report(
                         </div>
                         <div class="review-metrics">
                             <div class="review-metric"><strong>{score}</strong><span>Score</span></div>
-                            <div class="review-metric"><strong>{math.ceil(r["devops_years"] * 2) / 2}</strong><span>Years</span></div>
-                            <div class="review-metric"><strong>{kw_found}/{kw_total}</strong><span>Requirements</span></div>
+                            <div class="review-metric"><strong>{years_display}</strong><span>Years</span></div>
+                            <div class="review-metric"><strong>{requirements_display}</strong><span>Requirements</span></div>
                         </div>
                     </header>
                     <div class="review-body">
@@ -403,7 +691,7 @@ def write_html_report(
                                 <div class="section-icon">01</div>
                                 <div>
                                     <h4>Requirement evidence</h4>
-                                    <p>{kw_found} of {kw_total} required technologies confirmed in work experience</p>
+                                    <p>{evidence_summary}</p>
                                 </div>
                             </div>
                             <div class="keyword-grid">{kw_items}</div>
@@ -414,7 +702,7 @@ def write_html_report(
                                     <div class="section-icon">02</div>
                                     <div>
                                         <h4>Relevant career history</h4>
-                                        <p>{len(roles)} qualifying role{"s" if len(roles) != 1 else ""} used in the calculation</p>
+                                        <p>{career_summary}</p>
                                     </div>
                                 </div>
                                 <div class="timeline">{exp_items}</div>
@@ -661,6 +949,24 @@ a{{color:inherit}}
 
 /* Main area */
 .main{{padding:1.5rem 2rem;max-width:1400px;margin:0 auto;width:100%}}
+.tool-filter-panel{{margin-bottom:1rem;padding:1rem;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius)}}
+.tool-filter-head{{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin-bottom:.9rem}}
+.tool-filter-kicker{{display:block;margin-bottom:.25rem;color:var(--accent2);font-size:.64rem;font-weight:760;letter-spacing:.11em;text-transform:uppercase}}
+.tool-filter-head h2{{font-size:1rem;letter-spacing:-.015em}}
+.tool-filter-head p{{margin-top:.3rem;color:var(--text3);font-size:.73rem}}
+.tool-filter-clear{{padding:.42rem .7rem;border:1px solid var(--border2);border-radius:8px;background:var(--bg3);color:var(--text2);font-size:.72rem;font-weight:650;cursor:pointer}}
+.tool-filter-clear:disabled{{opacity:.4;cursor:not-allowed}}
+.tool-filter-chips{{display:flex;flex-wrap:wrap;gap:.5rem}}
+.tool-filter-chip{{display:inline-flex;align-items:center;gap:.42rem;padding:.42rem .58rem;border:1px solid var(--border);border-radius:9px;background:var(--bg3);color:var(--text2);font:inherit;font-size:.75rem;font-weight:650;cursor:pointer;transition:border-color .15s,background .15s,color .15s,transform .15s}}
+.tool-filter-chip:hover{{transform:translateY(-1px);border-color:var(--accent);color:var(--text)}}
+.tool-filter-chip[aria-pressed="true"]{{border-color:var(--accent);background:var(--accent-g);color:var(--accent2);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 24%,transparent)}}
+.tool-filter-chip img{{width:18px;height:18px;object-fit:contain}}
+.tool-filter-chip img.tool-icon-enlarged{{width:24px;height:24px;object-fit:fill}}
+.tool-filter-chip img.tool-icon-docker{{width:28px;height:16px;object-fit:contain}}
+.tool-filter-chip img.tool-icon-zabbix{{transform:scaleY(1.65)}}
+.tool-filter-chip strong{{min-width:1.4rem;padding:.08rem .3rem;border-radius:6px;background:var(--bg);color:var(--text3);font-family:var(--mono);font-size:.65rem;text-align:center}}
+.tool-filter-chip[aria-pressed="true"] strong{{color:var(--accent2)}}
+.tool-filter-summary{{margin-top:.8rem;color:var(--text3);font-size:.72rem}}
 
 /* Table */
 .table-wrap{{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}}
@@ -717,21 +1023,42 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
 .review-section-head{{display:flex;align-items:center;gap:.7rem;padding-bottom:.8rem;margin-bottom:.8rem;border-bottom:1px solid var(--border)}}
 .section-icon{{width:30px;height:30px;display:grid;place-items:center;border-radius:8px;background:var(--accent-g);color:var(--accent2);font-size:.65rem;font-weight:800;letter-spacing:.04em;flex:0 0 auto}}
 .section-icon-ai{{background:var(--amber-g);color:var(--amber)}}
-.section-icon-ai .copilot-icon{{width:17px;height:17px;fill:currentColor}}
+.section-icon-ai .copilot-icon{{display:block;width:24px;height:24px;object-fit:contain}}
 .review-section-head h4{{font-size:.9rem;font-weight:700;line-height:1.2}}
 .review-section-head p{{font-size:.7rem;color:var(--text3);margin-top:.2rem}}
-.keyword-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.6rem}}
+.keyword-grid{{display:flex;flex-direction:column;gap:1rem}}
 .review-split{{display:grid;grid-template-columns:1.15fr .85fr;gap:.85rem;align-items:stretch}}
 
 /* KW items */
-.kw-item{{padding:.75rem;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg3);min-width:0}}
+.kw-item{{width:100%;padding:1.05rem 1.15rem;border-radius:12px;border:1px solid var(--border);background:var(--bg3);min-width:0}}
 .kw-found{{border-top:2px solid var(--green)}}.kw-missing{{border-top:2px solid var(--red)}}.kw-review{{border-top:2px solid var(--amber)}}
-.kw-header{{display:flex;justify-content:space-between;align-items:center}}
-.kw-name{{font-weight:600;font-size:.88rem}}
+.kw-header{{display:flex;justify-content:space-between;align-items:center;gap:1rem;padding-bottom:.85rem;border-bottom:1px solid var(--border)}}
+.kw-title{{display:flex;align-items:center;gap:.75rem;min-width:0}}
+.kw-tool-icon{{width:44px;height:44px;display:grid;place-items:center;flex:0 0 44px;border-radius:11px;background:var(--bg);border:1px solid var(--border);box-shadow:0 6px 18px rgba(15,23,42,.08)}}
+.kw-tool-icon img{{display:block;width:30px;height:30px;object-fit:contain}}
+.kw-tool-icon img.tool-icon-enlarged{{width:38px;height:38px;object-fit:fill}}
+.kw-tool-icon img.tool-icon-docker{{width:38px;height:22px;object-fit:contain}}
+.kw-tool-icon img.tool-icon-zabbix{{transform:scaleY(1.65)}}
+.tool-icon-dark{{display:none!important}}
+[data-theme="dark"] .tool-icon-light{{display:none!important}}
+[data-theme="dark"] .tool-icon-dark{{display:block!important}}
+[data-theme="light"] .tool-icon-light{{display:block!important}}
+[data-theme="light"] .tool-icon-dark{{display:none!important}}
+.kw-tool-icon-fallback{{font-family:var(--mono);font-size:.7rem;font-weight:800;color:var(--accent2);background:var(--accent-g)}}
+.kw-title-copy{{display:flex;flex-direction:column;gap:.38rem}}
+.kw-name{{font-weight:750;font-size:1.05rem;line-height:1.15;text-transform:capitalize}}
+.kw-kicker{{font-size:.66rem;line-height:1.2;color:var(--text3);text-transform:uppercase;letter-spacing:.08em}}
 .kw-badge{{font-size:.68rem;font-weight:600;text-transform:uppercase;padding:.1rem .4rem;border-radius:6px}}
 .kw-badge.found{{background:var(--green-g);color:var(--green)}}.kw-badge.missing{{background:var(--red-g);color:var(--red)}}.kw-badge.review{{background:var(--amber-g);color:var(--amber)}}
 .kw-relation{{font-size:.72rem;color:var(--text2);margin-top:.25rem}}
-.kw-snippet{{font-family:var(--mono);font-size:.7rem;background:var(--bg);padding:.55rem;border-radius:6px;margin-top:.55rem;white-space:pre-wrap;word-break:break-word;max-height:96px;overflow-y:auto;line-height:1.5;color:var(--text2)}}
+.kw-citations{{display:flex;flex-direction:column;gap:.8rem;margin-top:.9rem}}
+.kw-citation{{width:100%;padding:.9rem 1rem;border:1px solid var(--border);border-left:3px solid var(--green);border-radius:10px;background:var(--bg2)}}
+.kw-citation-review{{margin-top:.9rem;border-left-color:var(--amber)}}
+.kw-citation-head{{display:flex;align-items:center;justify-content:space-between;gap:.75rem;margin-bottom:.6rem}}
+.kw-citation-index{{font-size:.68rem;font-weight:750;text-transform:uppercase;letter-spacing:.07em;color:var(--green)}}
+.kw-citation-review .kw-citation-index{{color:var(--amber)}}
+.kw-citation .kw-relation{{margin-top:0;font-weight:600;text-align:right}}
+.kw-snippet{{font-family:var(--mono);font-size:.78rem;background:var(--bg);padding:.85rem 1rem;border:1px solid var(--border);border-radius:8px;margin:0;white-space:pre-wrap;word-break:break-word;line-height:1.65;color:var(--text2);overflow:visible}}
 .kw-hl{{background:#22c55e33;color:#16a34a;font-weight:600;padding:1px 3px;border-radius:3px}}
 
 /* Timeline */
@@ -788,11 +1115,18 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
     .donut-wrap{{grid-column:auto}}
     .restrictions{{gap:.8rem 1.2rem}}.criteria-section{{min-width:0}}
     .main{{padding:1rem}}
+    .tool-filter-head{{flex-direction:column}}
     .candidate-review{{padding:.65rem}}
     .review-hero{{align-items:flex-start;flex-direction:column}}
     .review-metrics{{width:100%}}.review-metric{{flex:1;min-width:0}}
     .decision-rationale{{grid-template-columns:1fr}}
-    .keyword-grid,.review-split{{grid-template-columns:1fr}}
+    .review-split{{grid-template-columns:1fr}}
+    .kw-item{{padding:.9rem}}
+    .kw-header{{align-items:flex-start}}
+    .kw-citation-head{{align-items:flex-start;flex-direction:column;gap:.2rem}}
+    .kw-citation .kw-relation{{text-align:left}}
+    .ai-usage-overview,.ai-token-usage{{align-items:flex-start;flex-direction:column}}
+    .ai-usage-overview small{{max-width:none;text-align:left}}
     .podium-column{{height:590px}}
     .demo-heading{{top:.4rem;right:1rem;left:1rem}}.demo-heading p{{display:none}}.demo-progress{{width:100px}}
     .demo-cv-float{{left:42%;top:44%;width:min(52vw,235px)}}.demo-podium,.demo-cv-shadow{{left:42%}}.demo-podium{{width:min(72vw,390px)}}
@@ -829,6 +1163,17 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
 .ai-error{{display:flex;flex-direction:column;gap:.22rem;padding:.7rem .8rem;background:var(--red-g);border:1px solid rgba(244,63,94,.22);border-radius:8px}}
 .ai-error-title{{color:var(--red);font-size:.8rem}}
 .ai-error-detail{{color:var(--text2);font-size:.74rem;line-height:1.45}}
+.ai-usage-overview{{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:1rem;padding:.85rem 1rem;border:1px solid var(--border);border-radius:10px;background:var(--bg2)}}
+.ai-usage-overview-copy{{display:flex;flex-direction:column;gap:.18rem}}
+.ai-usage-overview-copy span{{font-size:.68rem;font-weight:750;text-transform:uppercase;letter-spacing:.08em;color:var(--text3)}}
+.ai-usage-overview-copy strong{{font-size:1.05rem;color:var(--text)}}
+.ai-usage-overview small{{max-width:55%;color:var(--text3);font-size:.72rem;text-align:right;line-height:1.45}}
+.ai-token-usage{{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;padding:.75rem .85rem;border:1px solid var(--border);border-radius:8px;background:var(--bg3)}}
+.ai-token-usage strong{{display:block;font-family:var(--mono);font-size:.9rem;color:var(--accent2)}}
+.ai-token-usage span{{display:block;margin-top:.22rem;color:var(--text3);font-size:.7rem;line-height:1.45}}
+.ai-token-usage-label{{font-size:.66rem;font-weight:750;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);white-space:nowrap}}
+.ai-token-unavailable{{border-style:dashed}}
+@media(max-width:768px){{.ai-usage-overview,.ai-token-usage{{align-items:flex-start;flex-direction:column}}.ai-usage-overview small{{max-width:none;text-align:left}}}}
 </style>
 </head>
 <body>
@@ -924,6 +1269,14 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
 </section>
 
 <main class="main">
+    {tool_filter_panel}
+    <div class="ai-usage-overview" id="aiUsageOverview" aria-live="polite">
+        <div class="ai-usage-overview-copy">
+            <span>Ambiguity-review AI credits</span>
+            <strong id="aiUsageTotal">No AI reviews loaded</strong>
+        </div>
+        <small id="aiUsageBreakdown">Exact Copilot credit usage appears after ambiguous CV recommendations are generated or loaded.</small>
+    </div>
     <div class="table-wrap">
         <table>
             <thead><tr><th>Candidate</th><th>Result</th><th>Score</th><th>Exp</th><th>Keywords</th></tr></thead>
@@ -1030,23 +1383,61 @@ window.addEventListener('scroll',requestScreeningRender,{{passive:true}});
 window.addEventListener('resize',requestScreeningRender);
 renderScreeningDemo();
 
-// Stat box click -> filter
+// Combined outcome + tool filters. Multiple tools use AND semantics.
+var activeStatusFilter='all';
+var selectedToolFilters=new Set();
+
+function applyCandidateFilters(){{
+    var visibleCount=0;
+    document.querySelectorAll('#tableBody .data-row').forEach(function(row){{
+        var rowTools=new Set(String(row.dataset.tools||'').split(/\\s+/).filter(Boolean));
+        var matchesStatus=activeStatusFilter==='all'||row.dataset.status===activeStatusFilter;
+        var matchesTools=Array.from(selectedToolFilters).every(function(tool){{return rowTools.has(tool);}});
+        var show=matchesStatus&&matchesTools;
+        row.style.display=show?'':'none';
+        row.classList.remove('selected');
+        row.setAttribute('aria-expanded','false');
+        if(show)visibleCount+=1;
+    }});
+    document.querySelectorAll('.detail-row').forEach(function(row){{row.style.display='none';}});
+    var summary=document.getElementById('toolFilterSummary');
+    if(summary){{
+        var selectedLabels=Array.from(document.querySelectorAll('.tool-filter-chip[aria-pressed="true"] span')).map(function(node){{return node.textContent;}});
+        summary.textContent='Showing '+visibleCount+' candidate'+(visibleCount===1?'':'s')+(selectedLabels.length?' with all: '+selectedLabels.join(' + '):'');
+    }}
+    var clear=document.getElementById('toolFilterClear');
+    if(clear)clear.disabled=selectedToolFilters.size===0;
+}}
+
 document.querySelectorAll('.stat-box[data-f]').forEach(box=>{{
     box.addEventListener('click',()=>{{
         const f=box.dataset.f;
+        activeStatusFilter=f;
         document.querySelectorAll('.stat-box[data-f]').forEach(s=>{{s.classList.remove('stat-active');s.setAttribute('aria-pressed','false');}});
         box.classList.add('stat-active');
         box.setAttribute('aria-pressed','true');
-        document.querySelectorAll('#tableBody tr').forEach(r=>{{
-            if(r.classList.contains('data-row')){{
-                const show=(f==='all'||r.dataset.status===f);
-                r.style.display=show?'':'none';
-                r.classList.remove('selected');
-            }}
-        }});
-        document.querySelectorAll('.detail-row').forEach(r=>r.style.display='none');
+        applyCandidateFilters();
     }});
 }});
+
+document.querySelectorAll('.tool-filter-chip[data-tool]').forEach(function(chip){{
+    chip.addEventListener('click',function(){{
+        var tool=chip.dataset.tool;
+        var selected=chip.getAttribute('aria-pressed')==='true';
+        chip.setAttribute('aria-pressed',selected?'false':'true');
+        if(selected)selectedToolFilters.delete(tool);else selectedToolFilters.add(tool);
+        applyCandidateFilters();
+    }});
+}});
+
+var toolFilterClear=document.getElementById('toolFilterClear');
+if(toolFilterClear){{
+    toolFilterClear.addEventListener('click',function(){{
+        selectedToolFilters.clear();
+        document.querySelectorAll('.tool-filter-chip').forEach(function(chip){{chip.setAttribute('aria-pressed','false');}});
+        applyCandidateFilters();
+    }});
+}}
 
 // Row click -> inline candidate review
 function toggleCandidateReview(row){{
@@ -1127,6 +1518,100 @@ function updateHumanDecision(container,decision){{
     }}
 }}
 
+function tokenCount(value){{
+    var parsed=Number(value);
+    return Number.isFinite(parsed)&&parsed>=0?Math.round(parsed):0;
+}}
+
+function formatTokenCount(value){{
+    return new Intl.NumberFormat().format(tokenCount(value));
+}}
+
+function creditCount(value){{
+    var parsed=Number(value);
+    return Number.isFinite(parsed)&&parsed>=0?parsed:0;
+}}
+
+function formatCreditCount(value){{
+    return new Intl.NumberFormat(undefined,{{maximumFractionDigits:2}}).format(creditCount(value));
+}}
+
+function formatModelName(value){{
+    var words=String(value||'').trim().replace(/[_-]+/g,' ').split(/\\s+/).filter(Boolean);
+    return words.map(function(word){{
+        var lower=word.toLowerCase();
+        if(lower==='gpt')return 'GPT';
+        if(lower==='claude')return 'Claude';
+        if(lower==='opus')return 'Opus';
+        if(lower==='sonnet')return 'Sonnet';
+        if(lower==='haiku')return 'Haiku';
+        if(lower==='gemini')return 'Gemini';
+        if(/^\\d+(?:\\.\\d+)*$/.test(word))return word;
+        return word.charAt(0).toUpperCase()+word.slice(1);
+    }}).join(' ');
+}}
+
+function updateAmbiguityCreditTotal(){{
+    var containers=Array.from(document.querySelectorAll('.semantic-review-container'));
+    var total=0,loaded=0,unavailable=0,calls=0,models=new Set();
+    containers.forEach(function(container){{
+        if(container.dataset.creditUsageState==='available'){{
+            loaded+=1;
+            total+=creditCount(container.dataset.aiCredits);
+            calls+=tokenCount(container.dataset.aiCalls);
+            String(container.dataset.aiModels||'').split('|').filter(Boolean).forEach(function(model){{models.add(model);}});
+        }}else if(container.dataset.creditUsageState==='unavailable'){{
+            unavailable+=1;
+        }}
+    }});
+    var totalNode=document.getElementById('aiUsageTotal');
+    var detailNode=document.getElementById('aiUsageBreakdown');
+    if(!totalNode||!detailNode)return;
+    if(!loaded&&unavailable){{
+        totalNode.textContent='Credit usage unavailable';
+        detailNode.textContent=formatTokenCount(unavailable)+' cached review'+(unavailable===1?' has':'s have')+' no Copilot credit metadata.';
+        return;
+    }}
+    if(!loaded){{
+        totalNode.textContent='No AI reviews loaded';
+        detailNode.textContent='Exact Copilot credit usage appears after ambiguous CV recommendations are generated or loaded.';
+        return;
+    }}
+    totalNode.textContent=formatCreditCount(total)+' '+(total===1?'credit':'credits');
+    var modelText=Array.from(models).map(formatModelName).join(', ');
+    detailNode.textContent=(modelText?modelText+' · ':'')+formatTokenCount(loaded)+' CV review'+(loaded===1?'':'s')+' · '+formatTokenCount(calls)+' AI call'+(calls===1?'':'s')+(unavailable?' · '+formatTokenCount(unavailable)+' older review'+(unavailable===1?'':'s')+' unavailable':'')+'.';
+}}
+
+function renderCreditUsage(container,review,output){{
+    var usage=review&&review.token_usage;
+    var card=semanticElement('div','ai-token-usage','');
+    var copy=semanticElement('div','','');
+    var credits=usage?Number(usage.ai_credits):NaN;
+    if(usage&&usage.available===true&&Number.isFinite(credits)&&credits>=0){{
+        var calls=tokenCount(usage.ai_calls);
+        var attempts=tokenCount(usage.attempts);
+        var models=Array.isArray(usage.models)?usage.models.map(String).filter(Boolean):[];
+        var modelLabel=models.length?models.map(formatModelName).join(', '):'Copilot';
+        var details=[formatTokenCount(calls)+' AI call'+(calls===1?'':'s')];
+        if(attempts>1)details.push(formatTokenCount(attempts)+' attempts');
+        copy.appendChild(semanticElement('strong','',modelLabel+' • '+formatCreditCount(credits)+' '+(credits===1?'credit':'credits')));
+        copy.appendChild(semanticElement('span','',details.join(' · ')));
+        container.dataset.creditUsageState='available';
+        container.dataset.aiCredits=String(credits);
+        container.dataset.aiModels=models.join('|');
+        container.dataset.aiCalls=String(calls);
+    }}else{{
+        card.className+=' ai-token-unavailable';
+        copy.appendChild(semanticElement('strong','','Credit usage unavailable'));
+        copy.appendChild(semanticElement('span','','Copilot did not return exact AI credit metadata for this review.'));
+        container.dataset.creditUsageState='unavailable';
+    }}
+    card.appendChild(copy);
+    card.appendChild(semanticElement('div','ai-token-usage-label','GitHub AI Credits'));
+    output.appendChild(card);
+    updateAmbiguityCreditTotal();
+}}
+
 function renderAmbiguityVerdict(container,review){{
     var output=container.querySelector('.semantic-review-output');
     output.innerHTML='';
@@ -1136,6 +1621,7 @@ function renderAmbiguityVerdict(container,review){{
         'AI recommendation: '+review.ai_verdict
     ));
     output.appendChild(semanticElement('div','semantic-summary',review.summary));
+    renderCreditUsage(container,review,output);
     (review.evidence||[]).forEach(function(finding){{
         var card=semanticElement('div','semantic-finding','');
         var head=semanticElement('div','semantic-finding-head','');

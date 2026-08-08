@@ -4,7 +4,7 @@ from typing import Dict, List, Set, Tuple
 SYNONYM_MAP: Dict[str, Set[str]] = {
     # Cloud providers
     "aws": {"amazon web services", "amazon aws", "aws cloud"},
-    "azure": {"microsoft azure", "azure cloud", "azure devops", "azure pipelines"},
+    "azure": {"microsoft azure", "azure cloud"},
     "gcp": {"google cloud platform", "google cloud", "gce", "gke"},
     # Container orchestration
     "kubernetes": {"k8s", "kube"},
@@ -35,9 +35,18 @@ SYNONYM_MAP: Dict[str, Set[str]] = {
         "continuous deployment",
         "ci-cd",
     },
+    "azure devops": {
+        "azuredevops",
+        "azure devops pipeline",
+        "azure devops pipelines",
+        "azure pipeline",
+        "azure pipelines",
+    },
     "jenkins": set(),
     "github actions": {"gh actions", "github-actions"},
-    "gitlab ci": {
+    "gitlab": {
+        "git lab",
+        "gitlab ci",
         "gitlab-ci",
         "gitlab ci/cd",
         "gitlab cicd",
@@ -151,6 +160,12 @@ def _build_keyword_index() -> Dict[str, str]:
 
 KEYWORD_INDEX: Dict[str, str] = _build_keyword_index()
 
+
+def normalize_tool_name(tool_name: str) -> str:
+    """Collapse a tool spelling or product variant into its filter facet."""
+    normalized = re.sub(r"\s+", " ", tool_name.strip().lower())
+    return KEYWORD_INDEX.get(normalized, normalized).lower()
+
 WORD_BOUNDARY_KEYWORDS: Set[str] = {
     "helm",
     "argo",
@@ -178,6 +193,10 @@ DEVOPS_KEYWORDS: Set[str] = set(SYNONYM_MAP.keys())
 
 
 _KEYWORD_PATTERN_CACHE: Dict[str, re.Pattern] = {}
+_KEYWORD_DISAMBIGUATION_SUFFIXES: Dict[str, str] = {
+    "azure": r"(?!\s+(?:devops|pipelines?)\b)",
+    "microsoft azure": r"(?!\s+(?:devops|pipelines?)\b)",
+}
 
 
 def _build_keyword_pattern(keyword: str) -> re.Pattern:
@@ -185,7 +204,8 @@ def _build_keyword_pattern(keyword: str) -> re.Pattern:
     if keyword in _KEYWORD_PATTERN_CACHE:
         return _KEYWORD_PATTERN_CACHE[keyword]
     escaped = re.escape(keyword)
-    pattern = re.compile(r"\b" + escaped + r"\b", re.IGNORECASE)
+    disambiguation = _KEYWORD_DISAMBIGUATION_SUFFIXES.get(keyword.lower(), "")
+    pattern = re.compile(r"\b" + escaped + r"\b" + disambiguation, re.IGNORECASE)
     _KEYWORD_PATTERN_CACHE[keyword] = pattern
     return pattern
 
