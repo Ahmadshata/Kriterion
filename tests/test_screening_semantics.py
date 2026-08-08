@@ -141,6 +141,29 @@ class DeterministicSemanticEvidenceTests(unittest.TestCase):
         self.assertFalse(result["ambiguity"])
         self.assertFalse(result["passed"])
 
+    def test_spawned_worker_receives_every_active_required_keyword(self) -> None:
+        profile = {
+            "min_experience_years": 3,
+            "must_have_in_experience": ["aws", "helm", "kubernetes"],
+            "min_score": None,
+        }
+        with (
+            patch.object(config, "MIN_DEVOPS_YEARS", 1.0),
+            patch.object(config, "REQUIRED_EXPERIENCE_KEYWORDS", {"aws"}),
+            patch.object(config, "MIN_SCORE", None),
+        ):
+            config.initialize_screening_worker(
+                profile,
+                3.0,
+                ["aws", "helm", "kubernetes", "prometheus"],
+                None,
+            )
+            self.assertEqual(config.MIN_DEVOPS_YEARS, 3.0)
+            self.assertEqual(
+                config.REQUIRED_EXPERIENCE_KEYWORDS,
+                {"aws", "helm", "kubernetes", "prometheus"},
+            )
+
     def test_hard_failure_does_not_hide_independent_date_ambiguity(self) -> None:
         result = self.screen_single_entry(
             "2021 - 2025\nDevOps Engineer\nMaintained Linux servers.",

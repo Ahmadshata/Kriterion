@@ -340,3 +340,15 @@ def apply_cli_overrides(
 
     if min_score is not None:
         MIN_SCORE = min_score
+
+
+def initialize_screening_worker(
+    profile: Optional[Dict[str, object]],
+    min_devops_years: float,
+    required_keywords: List[str],
+    min_score: Optional[int],
+) -> None:
+    """Apply the parent process's effective criteria inside a spawned worker."""
+    if profile is not None:
+        apply_profile(profile)
+    apply_cli_overrides(min_devops_years, required_keywords, min_score)

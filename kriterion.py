@@ -37,6 +37,7 @@ from kriterion.config import (
     DEFAULT_PROFILE_PATH,
     apply_cli_overrides,
     apply_profile,
+    initialize_screening_worker,
     load_profile,
 )
 from kriterion.output import write_csv, write_excel, write_html_report, write_report
@@ -170,7 +171,14 @@ def main() -> None:
         max_workers = max(1, (os.cpu_count() or 2) // 2)
         if len(to_screen) > 4 and max_workers > 1:
             with concurrent.futures.ProcessPoolExecutor(
-                max_workers=max_workers
+                max_workers=max_workers,
+                initializer=initialize_screening_worker,
+                initargs=(
+                    profile,
+                    config.MIN_DEVOPS_YEARS,
+                    sorted(config.REQUIRED_EXPERIENCE_KEYWORDS),
+                    config.MIN_SCORE,
+                ),
             ) as executor:
                 fresh_results = list(executor.map(screen_cv, to_screen))
         else:
