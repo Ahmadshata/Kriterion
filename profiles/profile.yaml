@@ -21,6 +21,7 @@ must_have_in_experience:
   - kubernetes
   - aws
   - helm
+  - prometheus
 
 # Minimum confidence score to pass (0-100). Set to null to disable.
 min_score: null
