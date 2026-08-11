@@ -16,8 +16,8 @@ from kriterion.experience import (
     compute_devops_roles,
     extract_experience_entries,
     has_experience_layout_anomaly,
-    is_devops_related,
     is_education_program,
+    is_freelance_entry,
 )
 from kriterion.extraction import (
     extract_text_by_page,
@@ -199,10 +199,16 @@ def _is_evidence_section_heading(line: str) -> bool:
 
 def _is_evidence_boundary(line: str) -> bool:
     return bool(
-        _is_standalone_bullet(line)
+        not line.strip()
+        or _is_standalone_bullet(line)
         or DATE_RANGE_PATTERN.search(normalize_date_text(line))
         or _is_evidence_section_heading(line)
     )
+
+
+def _ends_evidence_sentence(line: str) -> bool:
+    """Recognize the end of an unbulleted, line-wrapped responsibility."""
+    return bool(re.search(r"[.!?][\"')\]]*\s*$", line.strip()))
 
 
 def _evidence_paragraph(entry: Entry, match_line_index: int) -> str:
@@ -212,7 +218,7 @@ def _evidence_paragraph(entry: Entry, match_line_index: int) -> str:
     if not _starts_with_bullet(lines[start]):
         while start > 0:
             previous = lines[start - 1]
-            if _is_evidence_boundary(previous):
+            if _is_evidence_boundary(previous) or _ends_evidence_sentence(previous):
                 break
             start -= 1
             if _starts_with_bullet(lines[start]):
@@ -221,7 +227,11 @@ def _evidence_paragraph(entry: Entry, match_line_index: int) -> str:
     end = match_line_index + 1
     while end < len(lines):
         following = lines[end]
-        if _is_evidence_boundary(following) or _starts_with_bullet(following):
+        if (
+            _ends_evidence_sentence(lines[end - 1])
+            or _is_evidence_boundary(following)
+            or _starts_with_bullet(following)
+        ):
             break
         end += 1
 
@@ -562,10 +572,13 @@ def screen_cv(cv_path: Path) -> Dict[str, object]:
 
     # Separate education-program entries from professional experience
     education_program_entries: List[str] = []
+    freelance_entries_excluded: List[str] = []
     filtered_entries: List[Entry] = []
     for e in exp_entries:
         if is_education_program(e.head(3)):
             education_program_entries.append(e.head(3))
+        elif not config.INCLUDE_FREELANCE_EXPERIENCE and is_freelance_entry(e):
+            freelance_entries_excluded.append(e.head(3))
         else:
             filtered_entries.append(e)
 
@@ -617,8 +630,7 @@ def screen_cv(cv_path: Path) -> Dict[str, object]:
     roles, devops_months, date_ambiguity = compute_devops_roles(filtered_entries)
     devops_years = months_to_years(devops_months)
     layout_ambiguity = bool(
-        multi_column_layout
-        and has_experience_layout_anomaly(filtered_entries, roles)
+        multi_column_layout and has_experience_layout_anomaly(filtered_entries, roles)
     )
 
     semantic_ambiguity = any(
@@ -690,6 +702,7 @@ def screen_cv(cv_path: Path) -> Dict[str, object]:
         "devops_years": float(devops_years),
         "devops_roles": roles,
         "education_program_entries": education_program_entries,
+        "freelance_entries_excluded": freelance_entries_excluded,
         "excluded_company": excluded_company_hit,
         "excluded_university": excluded_university_hit,
         "preferred_program": preferred_program_found,

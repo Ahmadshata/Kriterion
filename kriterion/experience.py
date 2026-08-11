@@ -279,6 +279,8 @@ def _header_before_date(
     while candidate_index >= 0 and non_empty_lines < max_lines:
         line = lines[candidate_index][1]
         if not line.strip():
+            if candidate_indices:
+                break
             candidate_index -= 1
             continue
 
@@ -291,13 +293,28 @@ def _header_before_date(
         ):
             break
         if _is_bullet_line(line) and not (
-            _looks_like_company_line(header_text)
-            or is_education_program(header_text)
+            _looks_like_company_line(header_text) or is_education_program(header_text)
         ):
             break
         candidate_indices.append(candidate_index)
         non_empty_lines += 1
         candidate_index -= 1
+
+    # In a ``company -> date -> title`` layout the closest guarded line owns
+    # this date. Resolve it before scanning farther backward, where an earlier
+    # role title may otherwise steal the new employer.
+    if (
+        candidate_indices
+        and not any(
+            _looks_like_role_title(_strip_header_marker(lines[index][1]))
+            for index in candidate_indices
+        )
+        and _next_line_is_role_title(lines, date_index)
+    ):
+        company_index = candidate_indices[0]
+        company = _strip_header_marker(lines[company_index][1])
+        if _looks_like_company_before_role(company):
+            return list(lines[company_index:date_index])
 
     # The closest title signal is normally preceded only by the previous role's
     # prose and followed by an optional company/location line.  A configured
@@ -315,6 +332,7 @@ def _header_before_date(
             return list(lines[header_start:date_index])
         if is_education_program(candidate):
             return list(lines[candidate_index:date_index])
+
     return []
 
 
@@ -415,10 +433,7 @@ def _split_inline_role_company(role_header: str) -> Tuple[str, str]:
     # such as "Blnk" and "Konecta".
     if "," in text:
         title, company = (part.strip() for part in text.split(",", 1))
-        if (
-            _looks_like_role_title(title)
-            and _looks_like_company_line(company)
-        ):
+        if _looks_like_role_title(title) and _looks_like_company_line(company):
             return title, company
 
     return text, ""
@@ -526,7 +541,11 @@ _ACADEMIC_ROLE_PATTERN = re.compile(
 
 def has_experience_layout_anomaly(entries: List[Entry], roles: List[Role]) -> bool:
     """Detect role/employer inversions that indicate unreliable reading order."""
-    if entries and not roles and any(is_devops_related(entry.text()) for entry in entries):
+    if (
+        entries
+        and not roles
+        and any(is_devops_related(entry.text()) for entry in entries)
+    ):
         return True
     for entry in entries:
         date_index = next(
@@ -576,9 +595,7 @@ def build_date_based_entries_from_lines(
             title_follows_date = _next_line_is_role_title(lines, line_index)
             preceding_header = _header_before_date(lines, line_index)
             header_lines = (
-                []
-                if title_follows_date and not preceding_header
-                else preceding_header
+                [] if title_follows_date and not preceding_header else preceding_header
             )
             if header_lines and current[-len(header_lines) :] == header_lines:
                 header_start = len(current) - len(header_lines)
@@ -590,9 +607,8 @@ def build_date_based_entries_from_lines(
                     ),
                     None,
                 )
-                if (
-                    prior_non_empty_index is not None
-                    and is_date_range_line(current[prior_non_empty_index][1])
+                if prior_non_empty_index is not None and is_date_range_line(
+                    current[prior_non_empty_index][1]
                 ):
                     # Two role-looking lines surround the prior date. Preserve
                     # the collision so the layout-quality gate can review it.
@@ -638,6 +654,19 @@ def build_date_based_entries(pages: Sequence[str]) -> List[Entry]:
 def is_education_program(header_text: str) -> bool:
     """Check if entry header indicates a training/education program (not professional experience)."""
     return any(p.search(header_text) for p in config.EDUCATION_PROGRAM_PATTERNS)
+
+
+def is_freelance_entry(entry: Entry) -> bool:
+    """Identify freelance/self-employed work from the entry heading only."""
+    title, company = _entry_role_identity(entry)
+    heading = f"{title} {company}".strip()
+    return bool(
+        re.search(
+            r"\b(?:freelanc(?:e|er|ing)|self[ -]?employed|independent contractor)\b",
+            heading,
+            re.IGNORECASE,
+        )
+    )
 
 
 def is_devops_related(entry_text: str) -> bool:
@@ -774,6 +803,17 @@ def compute_devops_roles(entries: List[Entry]) -> Tuple[List[Role], int, bool]:
             )
         )
         title_is_devops_related = is_devops_related(title) or cloud_role
+        automation_developer_role = bool(
+            re.search(r"\b(?:developer|engineer)\b", title, re.IGNORECASE)
+            and re.search(
+                r"\b(?:automation|automat(?:e|ed|ing)|scripting)\b",
+                e.text(),
+                re.IGNORECASE,
+            )
+            and re.search(
+                r"\b(?:bash|python|shell|powershell)\b", e.text(), re.IGNORECASE
+            )
+        )
         generic_customer_support_role = bool(
             re.search(
                 r"\bcustomer\s+(?:technical\s+)?support\b",
@@ -783,7 +823,11 @@ def compute_devops_roles(entries: List[Entry]) -> Tuple[List[Role], int, bool]:
         )
         if generic_customer_support_role and not title_is_devops_related:
             continue
-        if not is_devops_related(e.text()) and not title_is_devops_related:
+        if (
+            not is_devops_related(e.text())
+            and not title_is_devops_related
+            and not automation_developer_role
+        ):
             continue
         drs: List[Tuple[dt.date, dt.date, bool]] = []
         for _, line in e.lines:

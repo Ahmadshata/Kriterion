@@ -10,6 +10,10 @@ role: Senior DevOps Engineer
 # Minimum years of relevant experience required
 min_experience_years: 3
 
+# Whether freelance/self-employed roles can contribute required-skill evidence
+# and overlap-safe years of experience. Set to false to exclude them entirely.
+include_freelance_experience: true
+
 # Skills that MUST appear in the candidate's Experience section (not just Skills).
 # The tool uses synonym matching — e.g., "kubernetes" also matches "k8s", "kube".
 # It also uses versioned semantic relationships: demonstrated AKS/EKS/GKE usage

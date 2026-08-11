@@ -22,6 +22,9 @@ SNIPPET_CONTEXT_LINES: int = 1
 # Minimum score to pass (optional, set via --min-score CLI flag)
 MIN_SCORE: Optional[int] = None
 
+# Whether freelance/self-employed roles contribute employment evidence and years.
+INCLUDE_FREELANCE_EXPERIENCE: bool = True
+
 # Scoring weights (sum to 100 for a perfect candidate)
 SCORE_WEIGHTS = {
     "keywords_found": 30,
@@ -259,12 +262,17 @@ def load_profile(path: Path) -> Dict[str, object]:
     ):
         raise ValueError("must_have_in_experience must be a non-empty list")
 
+    include_freelance = data.get("include_freelance_experience", True)
+    if not isinstance(include_freelance, bool):
+        raise ValueError("include_freelance_experience must be true or false")
+
     # Normalize and apply defaults for optional fields
     profile: Dict[str, object] = {
         "role": str(data["role"]),
         "min_experience_years": float(data["min_experience_years"]),
         "must_have_in_experience": [str(k) for k in data["must_have_in_experience"]],
         "min_score": data.get("min_score"),
+        "include_freelance_experience": include_freelance,
         "education_programs": data.get(
             "education_programs", _DEFAULT_EDUCATION_PROGRAMS
         ),
@@ -287,10 +295,14 @@ def _compile_patterns(items: List[str]) -> List[re.Pattern]:
 
 def apply_profile(profile: Dict[str, object]) -> None:
     """Apply a loaded profile to the global config."""
-    global MIN_DEVOPS_YEARS, REQUIRED_EXPERIENCE_KEYWORDS, MIN_SCORE, SCORE_WEIGHTS
+    global MIN_DEVOPS_YEARS, REQUIRED_EXPERIENCE_KEYWORDS, MIN_SCORE
+    global SCORE_WEIGHTS, INCLUDE_FREELANCE_EXPERIENCE
 
     MIN_DEVOPS_YEARS = float(profile["min_experience_years"])  # type: ignore
     REQUIRED_EXPERIENCE_KEYWORDS = set(profile["must_have_in_experience"])  # type: ignore
+    INCLUDE_FREELANCE_EXPERIENCE = bool(
+        profile.get("include_freelance_experience", True)
+    )
 
     if profile.get("min_score") is not None:
         MIN_SCORE = int(profile["min_score"])  # type: ignore
