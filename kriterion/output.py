@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import re
 import shutil
@@ -63,8 +64,7 @@ def _tool_icon_slug(tool_name: str) -> str:
         _tool_slug(canonical),
     ]
     icon_files = {
-        path.stem.lower(): path.stem.lower()
-        for path in _TOOL_ICON_SOURCE.glob("*.png")
+        path.stem.lower(): path.stem.lower() for path in _TOOL_ICON_SOURCE.glob("*.png")
     }
     for candidate in candidates:
         if candidate and candidate.lower() in icon_files:
@@ -78,13 +78,9 @@ def _tool_icon_images_html(tool_name: str) -> str:
     if not slug:
         return ""
     enlarged_class = (
-        f" tool-icon-enlarged tool-icon-{slug}"
-        if slug in _TOOL_ICON_ENLARGED
-        else ""
+        f" tool-icon-enlarged tool-icon-{slug}" if slug in _TOOL_ICON_ENLARGED else ""
     )
-    icon_files = {
-        path.stem.lower() for path in _TOOL_ICON_SOURCE.glob("*.png")
-    }
+    icon_files = {path.stem.lower() for path in _TOOL_ICON_SOURCE.glob("*.png")}
     white_slug = f"{slug}-white"
     if white_slug in icon_files:
         return (
@@ -99,11 +95,7 @@ def _tool_icon_html(tool_name: str) -> str:
     """Render a configured tool icon, with a readable fallback when unavailable."""
     images = _tool_icon_images_html(tool_name)
     if images:
-        return (
-            '<span class="kw-tool-icon" aria-hidden="true">'
-            f"{images}"
-            "</span>"
-        )
+        return f'<span class="kw-tool-icon" aria-hidden="true">{images}</span>'
     fallback = "".join(part[0] for part in tool_name.split() if part)[:2].upper() or "?"
     return (
         '<span class="kw-tool-icon kw-tool-icon-fallback" aria-hidden="true">'
@@ -125,6 +117,14 @@ def _role_label(role: Role) -> str:
     if role.company:
         return f"{role.title} @ {role.company}"
     return role.title
+
+
+def _role_tenure_years(role: Role) -> float:
+    """Return calendar tenure for display, independent of overlap allocation."""
+    month_span = (role.end.year - role.start.year) * 12 + (
+        role.end.month - role.start.month
+    )
+    return months_to_years(max(1, month_span))
 
 
 def _copy_tool_icons(output_dir: Path) -> None:
@@ -248,10 +248,8 @@ def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
         elif roles:
             lines.append("- DevOps roles counted:")
             for role in roles:
-                role_years = months_to_years(role.months_added)
-                role_period = (
-                    f"{format_date(role.start)} to {format_date(role.end)}"
-                )
+                role_years = _role_tenure_years(role)
+                role_period = f"{format_date(role.start)} to {format_date(role.end)}"
                 lines.append(
                     f"  - {_role_label(role)} ({role_period}): {role_years} years"
                 )
@@ -265,6 +263,12 @@ def write_report(results: List[Dict[str, object]], output_path: Path) -> None:
                 lines.append(f"  - {e}")
         else:
             lines.append("- Education program entries: None")
+
+        freelance_excluded: List[str] = r.get("freelance_entries_excluded", [])  # type: ignore
+        if freelance_excluded:
+            lines.append("- Freelance entries excluded by profile:")
+            for entry in freelance_excluded:
+                lines.append(f"  - {entry}")
 
         if r.get("excluded_company"):
             lines.append(f"- EXCLUDED COMPANY: {r['excluded_company']}")
@@ -335,7 +339,18 @@ def write_html_report(
     *,
     auto_ai_review: bool = True,
     profile: Optional[Dict[str, object]] = None,
+    ai_provider: str = "codex",
 ) -> None:
+    ai_provider = str(ai_provider).strip().lower()
+    if ai_provider not in {"codex", "copilot"}:
+        raise ValueError("ai_provider must be 'codex' or 'copilot'")
+    show_ai_usage = ai_provider == "copilot"
+    ai_provider_name = "GitHub Copilot" if show_ai_usage else "Codex"
+    ai_section_icon = (
+        f'<div class="section-icon section-icon-ai"><img class="copilot-icon" src="{_COPILOT_ICON_FILENAME}" alt=""></div>'
+        if show_ai_usage
+        else '<div class="section-icon section-icon-codex" aria-hidden="true">CX</div>'
+    )
     _copy_tool_icons(output_path.parent)
     if _COPILOT_ICON_SOURCE.is_file():
         shutil.copy2(_COPILOT_ICON_SOURCE, output_path.parent / _COPILOT_ICON_FILENAME)
@@ -369,8 +384,7 @@ def write_html_report(
         for tool in candidate_tools:
             tool_counts[tool] = tool_counts.get(tool, 0) + 1
     required_tool_names = {
-        normalize_tool_name(str(tool))
-        for tool in config.REQUIRED_EXPERIENCE_KEYWORDS
+        normalize_tool_name(str(tool)) for tool in config.REQUIRED_EXPERIENCE_KEYWORDS
     }
     sorted_tool_counts = sorted(
         tool_counts.items(),
@@ -384,8 +398,8 @@ def write_html_report(
         f'<button type="button" class="tool-filter-chip" '
         f'data-tool="{_html_escape(_tool_slug(tool))}" aria-pressed="false" '
         f'aria-label="Filter by {_html_escape(_tool_label(tool))}">'
-        f'{_tool_filter_icon_html(tool)}<span>{_html_escape(_tool_label(tool))}</span>'
-        f'<strong>{count}</strong></button>'
+        f"{_tool_filter_icon_html(tool)}<span>{_html_escape(_tool_label(tool))}</span>"
+        f"<strong>{count}</strong></button>"
         for tool, count in sorted_tool_counts
     )
     tool_filter_panel = (
@@ -436,14 +450,36 @@ def write_html_report(
 
     cv_base = cv_folder.resolve() if cv_folder else None
 
+    def _cv_url(filename: str) -> str:
+        if not cv_base:
+            return ""
+        from urllib.parse import quote
+
+        return "/cvs/" + quote(filename, safe="")
+
     def _file_link(filename: str) -> str:
         escaped = _html_escape(filename)
-        if cv_base:
-            from urllib.parse import quote
-
-            file_url = "/cvs/" + quote(filename, safe="")
+        file_url = _cv_url(filename)
+        if file_url:
             return f'<a href="{file_url}" target="_blank" class="file-link" title="Open CV">{escaped}</a>'
         return escaped
+
+    def _citation_role_context(result: Dict[str, object], snippet: str) -> str:
+        snippet_lower = snippet.lower()
+        result_roles = result.get("devops_roles", [])
+        if not isinstance(result_roles, list):
+            return ""
+        for role in result_roles:
+            if not isinstance(role, Role):
+                continue
+            title_match = bool(role.title and role.title.lower() in snippet_lower)
+            company_match = bool(role.company and role.company.lower() in snippet_lower)
+            if title_match or company_match:
+                return (
+                    f"{_role_label(role)} · {format_date(role.start)} — "
+                    f"{format_date(role.end)}"
+                )
+        return ""
 
     kw_bars_html = ""
     for kw, data in kw_coverage.items():
@@ -451,7 +487,9 @@ def write_html_report(
         color = (
             "var(--green)"
             if pct >= 70
-            else "var(--amber)" if pct >= 40 else "var(--red)"
+            else "var(--amber)"
+            if pct >= 40
+            else "var(--red)"
         )
         kw_bars_html += f'<div class="chart-row"><span class="chart-label">{_html_escape(kw)}</span><div class="chart-bar-track"><div class="chart-bar-fill" style="width:{pct}%;background:{color}"></div></div><span class="chart-value">{pct}%</span></div>'
 
@@ -461,6 +499,7 @@ def write_html_report(
         reasons_bars_html += f'<div class="chart-row"><span class="chart-label">{_html_escape(reason)}</span><div class="chart-bar-track"><div class="chart-bar-fill reason-fill" style="width:{pct}%"></div></div><span class="chart-value">{count}</span></div>'
 
     table_rows = ""
+    evidence_xray_items: List[Dict[str, object]] = []
     for idx, r in enumerate(results):
         result_label = excel_result_label(r)
         score = int(r.get("score", 0))
@@ -472,11 +511,9 @@ def write_html_report(
         table_years = (
             "Review"
             if layout_ambiguity
-            else f'{math.ceil(r["devops_years"] * 2) / 2} yr'
+            else f"{math.ceil(r['devops_years'] * 2) / 2} yr"
         )
-        table_requirements = (
-            "Review" if layout_ambiguity else f"{kw_found}/{kw_total}"
-        )
+        table_requirements = "Review" if layout_ambiguity else f"{kw_found}/{kw_total}"
 
         detected_tools = [] if layout_ambiguity else r.get("detected_tools", [])
         normalized_tools = (
@@ -488,9 +525,15 @@ def write_html_report(
             if isinstance(detected_tools, list)
             else set()
         )
-        tool_slugs = " ".join(
-            _tool_slug(tool) for tool in sorted(normalized_tools)
+        tool_slugs = " ".join(_tool_slug(tool) for tool in sorted(normalized_tools))
+        candidate_filename = str(r["file"])
+        candidate_cv_url = _cv_url(candidate_filename)
+        candidate_xray_url = (
+            candidate_cv_url.replace("/cvs/", "/xray/", 1)
+            if candidate_cv_url and candidate_filename.lower().endswith(".pdf")
+            else ""
         )
+        roles: List[Role] = r["devops_roles"]  # type: ignore
         table_rows += f"""<tr class="data-row row-{status_class}" data-status="{status_class}" data-tools="{_html_escape(tool_slugs)}" data-idx="{idx}" role="button" tabindex="0" aria-expanded="false" aria-label="Review candidate {_html_escape(str(r["file"]))}">
             <td class="cell-name">{_file_link(str(r["file"]))}</td>
             <td><span class="pill pill-{status_class}">{result_label}</span></td>
@@ -532,10 +575,27 @@ def write_html_report(
                 citation_items = ""
                 for citation_index, citation in enumerate(citations, start=1):
                     matched_term = str(citation.get("matched_term", kw))
-                    snippet = _html_escape(str(citation.get("snippet", "")))
+                    citation_snippet = str(citation.get("snippet", ""))
+                    snippet = _html_escape(citation_snippet)
                     snippet_hl = _highlight_term(snippet, matched_term)
+                    xray_id = f"xray-{idx}-{_tool_slug(kw)}-{citation_index}"
+                    evidence_xray_items.append(
+                        {
+                            "id": xray_id,
+                            "candidate": candidate_filename,
+                            "requirement": _tool_label(kw),
+                            "relationship": relationship.replace("_", " "),
+                            "page": int(citation["page"]),
+                            "matchedTerm": matched_term,
+                            "snippet": citation_snippet,
+                            "roleContext": _citation_role_context(r, citation_snippet),
+                            "sourceUrl": candidate_cv_url,
+                            "previewUrl": candidate_xray_url,
+                            "previewAvailable": bool(candidate_xray_url),
+                        }
+                    )
                     citation_items += f"""<article class="kw-citation">
-                        <div class="kw-citation-head"><span class="kw-citation-index">Evidence {citation_index:02d}</span><span class="kw-relation">Page {_html_escape(str(citation['page']))} · Matched: {_html_escape(matched_term)}</span></div>
+                        <div class="kw-citation-head"><span class="kw-citation-index">Evidence {citation_index:02d}</span><div class="kw-citation-source"><span class="kw-relation">Page {_html_escape(str(citation["page"]))} · Matched: {_html_escape(matched_term)}</span><button type="button" class="xray-open-btn" data-xray-id="{xray_id}"><span aria-hidden="true">⌖</span> Inspect source</button></div></div>
                         <pre class="kw-snippet">{snippet_hl}</pre>
                     </article>"""
                 kw_items += f"""<div class="kw-item kw-found">
@@ -543,28 +603,51 @@ def write_html_report(
                     <div class="kw-citations" aria-label="{citation_count} evidence citations">{citation_items}</div>
                 </div>"""
             elif detail.get("needs_review"):
-                matched_term = _html_escape(str(detail.get("matched_term", "")))
-                snippet = _html_escape(str(detail.get("snippet", "")))
-                snippet_hl = _highlight_term(
-                    snippet, str(detail.get("matched_term", ""))
+                review_matched_term = str(detail.get("matched_term", ""))
+                matched_term = _html_escape(review_matched_term)
+                review_snippet = str(detail.get("snippet", ""))
+                snippet = _html_escape(review_snippet)
+                snippet_hl = _highlight_term(snippet, review_matched_term)
+                xray_id = f"xray-{idx}-{_tool_slug(kw)}-review"
+                xray_page = int(detail.get("page") or 1)
+                evidence_xray_items.append(
+                    {
+                        "id": xray_id,
+                        "candidate": candidate_filename,
+                        "requirement": _tool_label(kw),
+                        "relationship": str(
+                            detail.get("relationship", "related evidence")
+                        ).replace("_", " "),
+                        "page": xray_page,
+                        "matchedTerm": review_matched_term,
+                        "snippet": review_snippet,
+                        "roleContext": _citation_role_context(r, review_snippet),
+                        "sourceUrl": candidate_cv_url,
+                        "previewUrl": candidate_xray_url,
+                        "previewAvailable": bool(candidate_xray_url),
+                    }
                 )
                 kw_items += f"""<div class="kw-item kw-review">
                     <div class="kw-header">{tool_heading}<span class="kw-badge review">review needed</span></div>
-                    <article class="kw-citation kw-citation-review"><div class="kw-citation-head"><span class="kw-citation-index">Related evidence</span><span class="kw-relation">Matched: {matched_term}</span></div><pre class="kw-snippet">{snippet_hl}</pre></article>
+                    <article class="kw-citation kw-citation-review"><div class="kw-citation-head"><span class="kw-citation-index">Related evidence</span><div class="kw-citation-source"><span class="kw-relation">Page {xray_page} · Matched: {matched_term}</span><button type="button" class="xray-open-btn" data-xray-id="{xray_id}"><span aria-hidden="true">⌖</span> Inspect source</button></div></div><pre class="kw-snippet">{snippet_hl}</pre></article>
                 </div>"""
             else:
                 kw_items += f"""<div class="kw-item kw-missing">
                     <div class="kw-header">{tool_heading}<span class="kw-badge missing">missing</span></div>
                 </div>"""
 
-        roles: List[Role] = r["devops_roles"]  # type: ignore
         exp_items = ""
         if layout_ambiguity:
-            exp_items = '<p class="empty-state">Career history withheld because the multi-column reading order is unreliable. Use the AI recommendation and verify against the original CV.</p>'
+            exp_items = '<p class="empty-state">Career history withheld because the multi-column reading order is unreliable. Use the AI verdict and verify against the original CV.</p>'
         elif roles:
-            for role_index, role in enumerate(roles):
-                ry = months_to_years(role.months_added)
-                has_next_role = role_index < len(roles) - 1
+            newest_roles = sorted(
+                roles,
+                key=lambda role: (role.start, role.end),
+                reverse=True,
+            )
+            for role_index, role in enumerate(newest_roles):
+                ry = _role_tenure_years(role)
+                has_next_role = role_index < len(newest_roles) - 1
                 connected_class = " exp-item-connected" if has_next_role else ""
                 connector = (
                     '<div class="exp-connector" aria-hidden="true">'
@@ -579,7 +662,7 @@ def write_html_report(
                     <div class="exp-dot"></div>
                     <div class="exp-content">
                         <div class="exp-title">{_html_escape(_role_label(role))}</div>
-                        <div class="exp-meta">{format_date(role.start)} — {format_date(role.end)} &middot; {ry} yr</div>
+                        <div class="exp-meta">{format_date(role.start)} — {format_date(role.end)} &middot; {ry} yr tenure</div>
                     </div>
                     {connector}
                 </div>"""
@@ -591,6 +674,9 @@ def write_html_report(
         if edu_entries:
             for e in edu_entries:
                 flags_items += f'<div class="flag-item flag-info"><span class="flag-icon">\U0001f393</span><span>Listed as experience but classified as education: {_html_escape(e)}</span></div>'
+        freelance_entries: List[str] = r.get("freelance_entries_excluded", [])  # type: ignore
+        for entry in freelance_entries:
+            flags_items += f'<div class="flag-item flag-info"><span class="flag-icon">◌</span><span>Freelance experience excluded by profile: {_html_escape(entry)}</span></div>'
         if r.get("layout_ambiguity"):
             flags_items += '<div class="flag-item flag-info"><span class="flag-icon">⚠</span><span>Multi-column extraction produced an unreliable experience reading order; AI-assisted review and a human decision are required.</span></div>'
         if r.get("excluded_company"):
@@ -619,18 +705,35 @@ def write_html_report(
         if bool(r.get("ambiguity")):
             ai_review_section = f"""<section class="review-section ai-review-section">
                 <div class="review-section-head">
-                    <div class="section-icon section-icon-ai"><img class="copilot-icon" src="{_COPILOT_ICON_FILENAME}" alt=""></div>
+                    {ai_section_icon}
                     <div>
-                        <h4>AI recommendation</h4>
-                        <p>A second opinion for the unresolved evidence</p>
+                        <h4>AI verdict</h4>
+                        <p>A second opinion from {ai_provider_name} for the unresolved evidence</p>
                     </div>
                 </div>
                 <div class="semantic-review-container" data-file="{_html_escape(str(r["file"]))}" data-idx="{idx}">
-                    <div class="ai-scope"><span>Ambiguity only</span><span>Work experience only</span><span>Human decides</span></div>
-                    <button class="semantic-review-btn" onclick="requestAmbiguityVerdict(this)">Generate recommendation</button>
+                    <div class="ai-scope"><span>{ai_provider_name}</span><span>Ambiguity only</span><span>Work experience only</span><span>Human decides</span></div>
+                    <button class="semantic-review-btn" onclick="requestAmbiguityVerdict(this)">Generate AI verdict</button>
                     <div class="semantic-review-output"></div>
                 </div>
             </section>"""
+
+        interview_architect_section = ""
+        if result_label == "PASS":
+            interview_architect_section = f"""<section class="review-section interview-architect-section">
+            <div class="review-section-head interview-architect-head">
+                {ai_section_icon}
+                <div>
+                    <h4>Interview Architect</h4>
+                    <p>{ai_provider_name} identifies each candidate issue and creates one evidence-led question for it</p>
+                </div>
+            </div>
+            <div class="interview-architect-container" data-file="{_html_escape(str(r["file"]))}" data-idx="{idx}">
+                <div class="interview-scope"><span>{ai_provider_name}</span><span>Ambiguous evidence</span><span>Strong claims</span><span>Timeline overlaps</span><span>Career gaps</span></div>
+                <button type="button" class="interview-architect-btn" onclick="requestInterviewPlan(this)">Analyze issues &amp; build questions</button>
+                <div class="interview-architect-output" aria-live="polite"></div>
+            </div>
+        </section>"""
 
         outcome_copy = (
             "Needs a reviewer to resolve uncertain evidence"
@@ -642,9 +745,7 @@ def write_html_report(
             )
         )
         years_display = (
-            "Review"
-            if layout_ambiguity
-            else str(math.ceil(r["devops_years"] * 2) / 2)
+            "Review" if layout_ambiguity else str(math.ceil(r["devops_years"] * 2) / 2)
         )
         requirements_display = (
             "Review" if layout_ambiguity else f"{kw_found}/{kw_total}"
@@ -657,7 +758,7 @@ def write_html_report(
         career_summary = (
             "Extracted timeline requires AI and human review"
             if layout_ambiguity
-            else f'{len(roles)} qualifying role{"s" if len(roles) != 1 else ""} used in the calculation'
+            else f"{len(roles)} qualifying role{'s' if len(roles) != 1 else ''} used in the calculation"
         )
 
         table_rows += f"""<tr class="detail-row" data-idx="{idx}" data-status="{status_class}" style="display:none">
@@ -679,6 +780,7 @@ def write_html_report(
                         </div>
                     </header>
                     <div class="review-body">
+                        <div class="lab-application-note" hidden>Kriterion Lab changed the displayed outcome using this report’s verified evidence. The detailed evidence and profile YAML remain unchanged.</div>
                         <section class="decision-rationale rationale-{status_class}">
                             <div class="rationale-heading">
                                 <span>Why this decision</span>
@@ -719,6 +821,7 @@ def write_html_report(
                             </section>
                         </div>
                         {ai_review_section}
+                        {interview_architect_section}
                     </div>
                 </div>
             </td>
@@ -764,6 +867,15 @@ def write_html_report(
             ),
             _restriction_group("Minimum Experience", [min_years], "chip-rule"),
             _restriction_group(
+                "Freelance Experience",
+                [
+                    "Included"
+                    if bool((profile or {}).get("include_freelance_experience", True))
+                    else "Excluded"
+                ],
+                "chip-rule",
+            ),
+            _restriction_group(
                 "Minimum Score",
                 [f"{config.MIN_SCORE}/100"] if config.MIN_SCORE is not None else [],
                 "chip-rule",
@@ -791,12 +903,124 @@ def write_html_report(
         ]
     )
 
+    criterion_lab_rules = sorted(config.REQUIRED_EXPERIENCE_KEYWORDS)
+    criterion_lab_candidates = []
+    preferred_program_required = bool(_profile_list("preferred_programs"))
+    for result in results:
+        required_evidence = result.get("required_evidence", {})
+        evidence_details = result.get("required_evidence_details", {})
+        lab_evidence: Dict[str, str] = {}
+        for keyword in criterion_lab_rules:
+            if bool(result.get("layout_ambiguity")):
+                state = "review"
+            elif required_evidence.get(keyword.lower()) is not None:  # type: ignore
+                state = "found"
+            elif evidence_details.get(keyword.lower(), {}).get("needs_review"):  # type: ignore
+                state = "review"
+            else:
+                state = "missing"
+            lab_evidence[keyword] = state
+
+        fixed_failures = []
+        if result.get("excluded_company"):
+            fixed_failures.append("Excluded company")
+        if result.get("excluded_university"):
+            fixed_failures.append("Excluded university")
+        if preferred_program_required and not result.get("preferred_program"):
+            fixed_failures.append("Preferred program missing")
+        if (
+            config.MIN_SCORE is not None
+            and int(result.get("score", 0)) < config.MIN_SCORE
+        ):
+            fixed_failures.append("Score threshold")
+
+        criterion_lab_candidates.append(
+            {
+                "name": str(result.get("file", "Candidate")),
+                "years": float(result.get("devops_years", 0)),
+                "dateReview": bool(result.get("date_ambiguity")),
+                "layoutReview": bool(result.get("layout_ambiguity")),
+                "evidence": lab_evidence,
+                "fixedFailures": fixed_failures,
+            }
+        )
+
+    criterion_lab_max_years = max(
+        5,
+        math.ceil(config.MIN_DEVOPS_YEARS + 2),
+        math.ceil(
+            max(
+                (float(result.get("devops_years", 0)) for result in results),
+                default=0,
+            )
+            + 1
+        ),
+    )
+    criterion_lab_data_json = json.dumps(
+        {
+            "minimumYears": config.MIN_DEVOPS_YEARS,
+            "rules": criterion_lab_rules,
+            "candidates": criterion_lab_candidates,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    criterion_lab_data_json = (
+        criterion_lab_data_json.replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
+    evidence_xray_data_json = json.dumps(
+        evidence_xray_items,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    evidence_xray_data_json = (
+        evidence_xray_data_json.replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
+
+    criterion_lab_rule_controls = "".join(
+        f"""<div class="criterion-rule" data-criterion-rule="{_html_escape(keyword)}">
+            <div class="criterion-rule-name">{_tool_icon_html(keyword)}<span>{_html_escape(_tool_label(keyword))}</span></div>
+            <div class="criterion-mode-group" role="group" aria-label="Mode for {_html_escape(_tool_label(keyword))}">
+                <button type="button" class="criterion-mode-btn is-active" data-mode="required" aria-pressed="true">Required</button>
+                <button type="button" class="criterion-mode-btn" data-mode="preferred" aria-pressed="false">Preferred</button>
+                <button type="button" class="criterion-mode-btn" data-mode="off" aria-pressed="false">Off</button>
+            </div>
+        </div>"""
+        for keyword in criterion_lab_rules
+    )
+    criterion_lab_impact_rows = (
+        '<div class="criterion-impact-row" data-impact-rule="__years__">'
+        '<div><strong>Minimum experience</strong><span class="criterion-impact-copy">Calculating impact…</span></div>'
+        '<div class="criterion-impact-track"><i></i></div></div>'
+        + "".join(
+            f'<div class="criterion-impact-row" data-impact-rule="{_html_escape(keyword)}">'
+            f'<div><strong>{_html_escape(_tool_label(keyword))}</strong><span class="criterion-impact-copy">Calculating impact…</span></div>'
+            '<div class="criterion-impact-track"><i></i></div></div>'
+            for keyword in criterion_lab_rules
+        )
+    )
+
     profile_role = _html_escape(str((profile or {}).get("role", "Target role")))
     podium_skills_html = "".join(
         f'<div class="demo-skill"><span>{_html_escape(keyword)}</span>'
         f'<b><i style="--skill:{data["pct"]}%"></i></b>'
-        f'<em>{data["pct"]}%</em></div>'
+        f"<em>{data['pct']}%</em></div>"
         for keyword, data in list(kw_coverage.items())[:3]
+    )
+    ai_usage_overview = (
+        """<div class="ai-usage-overview" id="aiUsageOverview" aria-live="polite">
+        <div class="ai-usage-overview-copy">
+            <span>Ambiguity-review AI credits</span>
+            <strong id="aiUsageTotal">No AI reviews loaded</strong>
+        </div>
+        <small id="aiUsageBreakdown">Exact Copilot credit usage appears after ambiguous CV verdicts are generated or loaded.</small>
+    </div>"""
+        if show_ai_usage
+        else ""
     )
 
     html = f"""<!DOCTYPE html>
@@ -949,6 +1173,71 @@ a{{color:inherit}}
 
 /* Main area */
 .main{{padding:1.5rem 2rem;max-width:1400px;margin:0 auto;width:100%}}
+.criterion-lab{{margin:1rem 0;overflow:hidden;border:1px solid color-mix(in srgb,var(--accent) 36%,var(--border));border-radius:var(--radius);background:linear-gradient(145deg,color-mix(in srgb,var(--bg2) 94%,var(--accent) 6%),var(--bg2));box-shadow:0 18px 45px rgba(0,0,0,.1)}}
+.criterion-lab-head{{display:flex;align-items:flex-start;justify-content:space-between;gap:1.5rem;padding:1.2rem 1.25rem;border-bottom:1px solid var(--border)}}
+.criterion-lab-kicker{{display:block;margin-bottom:.28rem;color:var(--accent2);font-size:.64rem;font-weight:780;letter-spacing:.12em;text-transform:uppercase}}
+.criterion-lab-head h2{{font-size:1.2rem;letter-spacing:-.025em}}
+.criterion-lab-head p{{max-width:72ch;margin-top:.38rem;color:var(--text2);font-size:.76rem;line-height:1.5}}
+.criterion-lab-safety{{display:inline-flex;align-items:center;gap:.38rem;flex:0 0 auto;padding:.35rem .6rem;border:1px solid rgba(34,197,94,.22);border-radius:999px;background:var(--green-g);color:var(--green);font-size:.65rem;font-weight:720;white-space:nowrap}}
+.criterion-lab-safety::before{{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}}
+.criterion-lab-grid{{display:grid;grid-template-columns:minmax(360px,.92fr) minmax(430px,1.08fr)}}
+.criterion-lab-controls,.criterion-lab-results{{padding:1.2rem 1.25rem}}
+.criterion-lab-controls{{border-right:1px solid var(--border)}}
+.criterion-panel-title{{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:.9rem}}
+.criterion-panel-title h3{{font-size:.83rem;font-weight:720}}
+.criterion-panel-title span{{color:var(--text3);font-size:.66rem}}
+.criterion-years{{display:grid;grid-template-columns:1fr auto;gap:.7rem 1rem;align-items:center;padding:.85rem;border:1px solid var(--border);border-radius:10px;background:var(--bg3)}}
+.criterion-years-copy strong{{display:block;font-size:.8rem}}.criterion-years-copy span{{display:block;margin-top:.2rem;color:var(--text3);font-size:.66rem}}
+.criterion-years-output{{min-width:68px;color:var(--accent2);font-family:var(--mono);font-size:1.05rem;font-weight:760;text-align:right}}
+.criterion-years input{{grid-column:1/-1;width:100%;accent-color:var(--accent);cursor:pointer}}
+.criterion-rules{{display:grid;gap:.55rem;margin-top:.75rem}}
+.criterion-rule{{display:flex;align-items:center;justify-content:space-between;gap:.8rem;padding:.58rem .65rem;border:1px solid var(--border);border-radius:10px;background:var(--bg3)}}
+.criterion-rule-name{{display:flex;align-items:center;gap:.55rem;min-width:0;font-size:.76rem;font-weight:680}}
+.criterion-rule-name .kw-tool-icon{{width:30px;height:30px;flex-basis:30px;border-radius:8px}}
+.criterion-rule-name .kw-tool-icon img{{width:22px;height:22px}}
+.criterion-mode-group{{display:flex;overflow:hidden;border:1px solid var(--border2);border-radius:8px;background:var(--bg)}}
+.criterion-mode-btn{{padding:.38rem .48rem;border:0;border-left:1px solid var(--border);background:transparent;color:var(--text3);font:inherit;font-size:.6rem;font-weight:680;cursor:pointer;transition:background .15s,color .15s}}
+.criterion-mode-btn:first-child{{border-left:0}}
+.criterion-mode-btn:hover{{color:var(--text)}}
+.criterion-mode-btn.is-active[data-mode="required"]{{background:var(--accent-g);color:var(--accent2)}}
+.criterion-mode-btn.is-active[data-mode="preferred"]{{background:var(--green-g);color:var(--green)}}
+.criterion-mode-btn.is-active[data-mode="off"]{{background:var(--bg4);color:var(--text2)}}
+.criterion-lab-actions{{display:flex;flex-wrap:wrap;align-items:center;gap:.55rem;margin-top:.85rem}}
+.criterion-reset{{padding:.48rem .72rem;border:1px solid var(--border2);border-radius:8px;background:var(--bg3);color:var(--text2);font:inherit;font-size:.68rem;font-weight:680;cursor:pointer}}
+.criterion-reset:hover{{border-color:var(--accent);color:var(--text)}}
+.criterion-apply{{padding:.5rem .82rem;border:1px solid color-mix(in srgb,var(--accent) 65%,var(--border));border-radius:8px;background:linear-gradient(135deg,var(--accent),#4f7cff);color:#fff;font:inherit;font-size:.68rem;font-weight:760;cursor:pointer;box-shadow:0 5px 16px rgba(124,92,252,.2);transition:transform .15s,opacity .15s}}
+.criterion-apply:hover:not(:disabled){{transform:translateY(-1px)}}
+.criterion-apply:disabled{{opacity:.42;cursor:not-allowed;box-shadow:none}}
+.criterion-adjustment-count{{margin-left:auto;color:var(--text3);font-size:.66rem}}
+.criterion-apply-status{{width:100%;min-height:1em;color:var(--text3);font-size:.62rem;line-height:1.4}}
+.criterion-apply-status.is-applied{{color:var(--green)}}
+.criterion-result-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:.55rem}}
+.criterion-result{{padding:.75rem;border:1px solid var(--border);border-radius:10px;background:var(--bg3)}}
+.criterion-result span{{display:block;color:var(--text3);font-size:.58rem;font-weight:720;letter-spacing:.07em;text-transform:uppercase}}
+.criterion-result strong{{display:block;margin-top:.25rem;font-family:var(--mono);font-size:1.22rem}}
+.criterion-result-pass strong{{color:var(--green)}}.criterion-result-fail strong{{color:var(--red)}}.criterion-result-amb strong{{color:var(--amber)}}.criterion-result-pref strong{{color:var(--accent2)}}
+.criterion-result small{{display:block;min-height:1em;margin-top:.18rem;color:var(--text3);font-size:.58rem}}
+.criterion-distribution{{display:flex;gap:3px;height:6px;margin:.7rem 0 1rem;overflow:hidden;border-radius:999px;background:var(--border)}}
+.criterion-distribution i{{display:block;min-width:0;border-radius:inherit;transition:flex .25s ease}}
+.criterion-distribution-pass{{background:var(--green)}}.criterion-distribution-fail{{background:var(--red)}}.criterion-distribution-amb{{background:var(--amber)}}
+.criterion-lab-insights{{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}}
+.criterion-subpanel{{min-width:0;padding:.8rem;border:1px solid var(--border);border-radius:10px;background:var(--bg3)}}
+.criterion-subpanel h3{{font-size:.72rem;font-weight:720}}
+.criterion-impact-list{{display:grid;gap:.62rem;margin-top:.72rem}}
+.criterion-impact-row>div:first-child{{display:flex;align-items:flex-start;justify-content:space-between;gap:.6rem}}
+.criterion-impact-row strong{{font-size:.65rem;font-weight:650}}
+.criterion-impact-copy{{color:var(--text3);font-size:.58rem;text-align:right}}
+.criterion-impact-track{{height:4px;margin-top:.32rem;overflow:hidden;border-radius:99px;background:var(--border)}}
+.criterion-impact-track i{{display:block;width:0;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--accent),#4f9cff);transition:width .25s ease}}
+.criterion-warning-list,.criterion-movement-list{{display:grid;gap:.42rem;margin-top:.7rem}}
+.criterion-warning{{padding:.5rem .58rem;border-left:2px solid var(--amber);border-radius:6px;background:var(--amber-g);color:var(--text2);font-size:.62rem;line-height:1.4}}
+.criterion-warning.is-positive{{border-left-color:var(--green);background:var(--green-g)}}
+.criterion-movement{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.5rem;align-items:center;padding:.42rem .5rem;border-radius:6px;background:var(--bg)}}
+.criterion-movement-name{{overflow:hidden;color:var(--text2);font-size:.61rem;text-overflow:ellipsis;white-space:nowrap}}
+.criterion-movement-change{{font-family:var(--mono);font-size:.58rem;font-weight:700}}
+.criterion-movement-more,.criterion-empty{{color:var(--text3);font-size:.6rem;line-height:1.4}}
+.criterion-lab-foot{{padding:.72rem 1.25rem;border-top:1px solid var(--border);background:color-mix(in srgb,var(--bg3) 75%,transparent);color:var(--text3);font-size:.64rem;line-height:1.45}}
+.lab-application-note{{margin-bottom:.75rem;padding:.62rem .72rem;border:1px solid color-mix(in srgb,var(--accent) 30%,var(--border));border-left:3px solid var(--accent);border-radius:8px;background:var(--accent-g);color:var(--text2);font-size:.7rem;line-height:1.45}}
 .tool-filter-panel{{margin-bottom:1rem;padding:1rem;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius)}}
 .tool-filter-head{{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin-bottom:.9rem}}
 .tool-filter-kicker{{display:block;margin-bottom:.25rem;color:var(--accent2);font-size:.64rem;font-weight:760;letter-spacing:.11em;text-transform:uppercase}}
@@ -1022,8 +1311,9 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
 .review-section{{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:1rem}}
 .review-section-head{{display:flex;align-items:center;gap:.7rem;padding-bottom:.8rem;margin-bottom:.8rem;border-bottom:1px solid var(--border)}}
 .section-icon{{width:30px;height:30px;display:grid;place-items:center;border-radius:8px;background:var(--accent-g);color:var(--accent2);font-size:.65rem;font-weight:800;letter-spacing:.04em;flex:0 0 auto}}
-.section-icon-ai{{background:var(--amber-g);color:var(--amber)}}
-.section-icon-ai .copilot-icon{{display:block;width:24px;height:24px;object-fit:contain}}
+.section-icon-ai{{width:40px;height:40px;border-radius:0;background:transparent;color:var(--amber)}}
+.section-icon-ai .copilot-icon{{display:block;width:38px;height:38px;object-fit:contain}}
+.section-icon-codex{{width:38px;height:38px;border:1px solid color-mix(in srgb,var(--accent) 42%,var(--border));border-radius:50%;background:radial-gradient(circle at 35% 30%,#a78bfa,var(--accent) 45%,#312e81);color:#fff;font-family:var(--mono);font-size:.67rem;font-weight:850;letter-spacing:-.03em;box-shadow:0 0 0 4px var(--accent-g),0 7px 18px rgba(124,92,252,.2)}}
 .review-section-head h4{{font-size:.9rem;font-weight:700;line-height:1.2}}
 .review-section-head p{{font-size:.7rem;color:var(--text3);margin-top:.2rem}}
 .keyword-grid{{display:flex;flex-direction:column;gap:1rem}}
@@ -1055,11 +1345,61 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
 .kw-citation{{width:100%;padding:.9rem 1rem;border:1px solid var(--border);border-left:3px solid var(--green);border-radius:10px;background:var(--bg2)}}
 .kw-citation-review{{margin-top:.9rem;border-left-color:var(--amber)}}
 .kw-citation-head{{display:flex;align-items:center;justify-content:space-between;gap:.75rem;margin-bottom:.6rem}}
+.kw-citation-source{{display:flex;align-items:center;justify-content:flex-end;gap:.55rem;flex-wrap:wrap}}
 .kw-citation-index{{font-size:.68rem;font-weight:750;text-transform:uppercase;letter-spacing:.07em;color:var(--green)}}
 .kw-citation-review .kw-citation-index{{color:var(--amber)}}
 .kw-citation .kw-relation{{margin-top:0;font-weight:600;text-align:right}}
 .kw-snippet{{font-family:var(--mono);font-size:.78rem;background:var(--bg);padding:.85rem 1rem;border:1px solid var(--border);border-radius:8px;margin:0;white-space:pre-wrap;word-break:break-word;line-height:1.65;color:var(--text2);overflow:visible}}
 .kw-hl{{background:#22c55e33;color:#16a34a;font-weight:600;padding:1px 3px;border-radius:3px}}
+.xray-open-btn{{display:inline-flex;align-items:center;gap:.38rem;margin-top:.65rem;padding:.42rem .62rem;border:1px solid color-mix(in srgb,var(--accent) 45%,var(--border));border-radius:8px;background:var(--accent-g);color:var(--accent2);font:inherit;font-size:.66rem;font-weight:720;cursor:pointer;transition:border-color .15s,background .15s,transform .15s}}
+.kw-citation-source .xray-open-btn{{margin-top:0}}
+.xray-open-btn:hover{{transform:translateY(-1px);border-color:var(--accent);background:color-mix(in srgb,var(--accent-g) 70%,var(--bg3))}}
+
+/* Evidence X-Ray */
+body.xray-open{{overflow:hidden}}
+.xray-shell{{position:fixed;z-index:1000;inset:0;display:grid;place-items:center;padding:2vh 2vw}}
+.xray-shell[hidden]{{display:none}}
+.xray-backdrop{{position:absolute;inset:0;border:0;background:rgba(3,6,13,.78);backdrop-filter:blur(8px)}}
+.xray-dialog{{position:relative;display:flex;flex-direction:column;width:min(1500px,96vw);height:min(920px,96vh);overflow:hidden;border:1px solid var(--border2);border-radius:18px;background:var(--bg2);box-shadow:0 30px 90px rgba(0,0,0,.55)}}
+.xray-head{{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.9rem 1rem;border-bottom:1px solid var(--border);background:linear-gradient(135deg,color-mix(in srgb,var(--bg3) 92%,var(--accent) 8%),var(--bg2))}}
+.xray-title-group{{display:flex;align-items:center;gap:.75rem;min-width:0}}
+.xray-mark{{width:38px;height:38px;display:grid;place-items:center;flex:0 0 auto;border:1px solid rgba(124,92,252,.3);border-radius:10px;background:var(--accent-g);color:var(--accent2);font-size:1.05rem}}
+.xray-kicker{{display:block;color:var(--accent2);font-size:.58rem;font-weight:760;letter-spacing:.12em;text-transform:uppercase}}
+.xray-head h2{{margin-top:.15rem;font-size:1rem;letter-spacing:-.015em}}
+.xray-candidate{{display:block;max-width:70vw;margin-top:.15rem;overflow:hidden;color:var(--text3);font-size:.65rem;text-overflow:ellipsis;white-space:nowrap}}
+.xray-head-actions{{display:flex;align-items:center;gap:.45rem}}
+.xray-nav,.xray-close{{height:34px;border:1px solid var(--border2);border-radius:8px;background:var(--bg3);color:var(--text2);font:inherit;cursor:pointer}}
+.xray-nav{{min-width:34px;padding:0 .55rem;font-size:.68rem;font-weight:680}}
+.xray-close{{width:34px;font-size:1rem}}
+.xray-nav:hover,.xray-close:hover{{border-color:var(--accent);color:var(--text)}}
+.xray-nav:disabled{{opacity:.35;cursor:not-allowed}}
+.xray-body{{display:grid;grid-template-columns:minmax(0,1.48fr) minmax(330px,.72fr);min-height:0;flex:1}}
+.xray-source{{display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid var(--border);background:#161922}}
+.xray-source-head{{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.62rem .8rem;border-bottom:1px solid var(--border);background:var(--bg3)}}
+.xray-source-head span{{font-size:.68rem;font-weight:680}}
+.xray-page{{color:var(--text3);font-family:var(--mono);font-size:.62rem}}
+.xray-preview{{position:relative;display:flex;align-items:flex-start;justify-content:center;min-height:0;flex:1;padding:1rem;overflow:auto;background:#20232d}}
+.xray-page-image{{display:block;max-width:100%;height:auto;background:#fff;box-shadow:0 12px 38px rgba(0,0,0,.38);transition:opacity .18s}}
+.xray-page-image.is-loading{{opacity:.18}}
+.xray-loading{{position:absolute;z-index:2;top:1.6rem;left:50%;transform:translateX(-50%);padding:.45rem .65rem;border:1px solid var(--border2);border-radius:8px;background:var(--bg2);color:var(--text2);font-size:.65rem;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,.24)}}
+.xray-source-fallback{{display:grid;place-content:center;gap:.7rem;height:100%;padding:2rem;text-align:center;color:var(--text2)}}
+.xray-preview[hidden],.xray-loading[hidden],.xray-source-fallback[hidden],.xray-open-original[hidden]{{display:none}}
+.xray-source-fallback strong{{font-size:.9rem}}.xray-source-fallback span{{max-width:48ch;font-size:.7rem;line-height:1.55}}
+.xray-open-original{{display:inline-flex;align-items:center;justify-content:center;padding:.5rem .7rem;border:1px solid var(--border2);border-radius:8px;background:var(--bg3);color:var(--text);font-size:.68rem;font-weight:680;text-decoration:none}}
+.xray-open-original:hover{{border-color:var(--accent);color:var(--accent2)}}
+.xray-evidence{{min-height:0;padding:1rem;overflow:auto;background:var(--bg2)}}
+.xray-badges{{display:flex;flex-wrap:wrap;gap:.4rem}}
+.xray-badge{{padding:.25rem .48rem;border:1px solid var(--border);border-radius:999px;background:var(--bg3);color:var(--text2);font-size:.6rem;font-weight:680;text-transform:capitalize}}
+.xray-badge-primary{{border-color:rgba(34,197,94,.24);background:var(--green-g);color:var(--green)}}
+.xray-facts{{display:grid;gap:.55rem;margin-top:.9rem;padding:.75rem;border:1px solid var(--border);border-radius:10px;background:var(--bg3)}}
+.xray-fact{{display:grid;grid-template-columns:82px 1fr;gap:.6rem;font-size:.66rem;line-height:1.4}}
+.xray-fact span{{color:var(--text3)}}.xray-fact strong{{min-width:0;font-weight:650;word-break:break-word}}
+.xray-evidence h3{{margin-top:1rem;font-size:.72rem}}
+.xray-excerpt{{margin-top:.55rem;padding:.85rem;border:1px solid var(--border);border-left:3px solid var(--green);border-radius:8px;background:var(--bg);color:var(--text2);font-family:var(--mono);font-size:.68rem;line-height:1.65;white-space:pre-wrap;word-break:break-word}}
+.xray-excerpt.is-updated{{animation:xray-excerpt-update .28s ease}}
+.xray-excerpt mark{{padding:1px 3px;border-radius:3px;background:#facc15;color:#111827;font-weight:800;box-shadow:0 0 0 1px rgba(250,204,21,.35),0 0 14px rgba(250,204,21,.18)}}
+@keyframes xray-excerpt-update{{from{{transform:translateY(3px);opacity:.55}}to{{transform:none;opacity:1}}}}
+.xray-note{{margin-top:.75rem;padding:.62rem .7rem;border-radius:8px;background:var(--accent-g);color:var(--text2);font-size:.62rem;line-height:1.5}}
 
 /* Timeline */
 .timeline{{--exp-axis:4px;--exp-gap:.8rem;display:flex;flex-direction:column;position:relative;margin-left:.35rem}}
@@ -1071,14 +1411,14 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
 .exp-meta{{font-size:.78rem;color:var(--text2);margin-top:.1rem}}
 .exp-connector{{position:absolute;z-index:0;top:calc(.48rem + 4.5px);left:0;width:100%;height:calc(100% + var(--exp-gap));overflow:hidden;pointer-events:none}}
 .exp-connector::before{{position:absolute;top:0;bottom:0;left:var(--exp-axis);width:1px;background:var(--border2);content:"";transform:translateX(-50%)}}
-.exp-particle{{--exp-particle-half:2px;position:absolute;z-index:1;top:-4px;left:var(--exp-axis);width:4px;height:4px;border-radius:50%;background:var(--accent);filter:drop-shadow(0 0 4px var(--accent));opacity:0;will-change:top,opacity;animation:exp-flow-down 4.2s linear infinite}}
+.exp-particle{{--exp-particle-half:2px;position:absolute;z-index:1;top:calc(100% + var(--exp-particle-half));left:var(--exp-axis);width:4px;height:4px;border-radius:50%;background:var(--accent);filter:drop-shadow(0 0 4px var(--accent));opacity:0;will-change:top,opacity;animation:exp-flow-up 4.2s linear infinite}}
 .exp-particle:nth-child(2){{animation-delay:-1.4s}}
 .exp-particle:nth-child(3){{animation-delay:-2.8s}}
-@keyframes exp-flow-down{{
-    0%{{top:-4px;transform:translateX(-50%);opacity:0}}
+@keyframes exp-flow-up{{
+    0%{{top:calc(100% + var(--exp-particle-half));transform:translateX(-50%);opacity:0}}
     10%{{opacity:1}}
     96%{{opacity:1}}
-    100%{{top:calc(100% + var(--exp-particle-half));transform:translateX(-50%);opacity:0}}
+    100%{{top:-4px;transform:translateX(-50%);opacity:0}}
 }}
 
 /* Flags */
@@ -1097,6 +1437,8 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
     .donut-wrap{{grid-column:1/-1;min-height:150px;padding:1rem 0 0;border-top:1px solid var(--border);border-left:0}}
     .insights-sticky{{grid-template-columns:minmax(300px,.68fr) minmax(520px,1.32fr);padding-right:1.25rem;padding-left:1.25rem}}
     .demo-outcomes{{right:.65rem;width:155px}}.demo-outcome{{grid-template-columns:31px 1fr;padding:9px}}.demo-outcome-icon{{width:30px;height:30px}}
+    .criterion-lab-grid{{grid-template-columns:1fr}}
+    .criterion-lab-controls{{border-right:0;border-bottom:1px solid var(--border)}}
 }}
 @media(max-width:900px){{
     .insights-stage{{height:auto}}
@@ -1115,6 +1457,21 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
     .donut-wrap{{grid-column:auto}}
     .restrictions{{gap:.8rem 1.2rem}}.criteria-section{{min-width:0}}
     .main{{padding:1rem}}
+    .criterion-lab-head{{flex-direction:column}}
+    .criterion-lab-controls,.criterion-lab-results{{padding:1rem}}
+    .criterion-rule{{align-items:flex-start;flex-direction:column}}
+    .criterion-mode-group{{width:100%}}.criterion-mode-btn{{flex:1}}
+    .criterion-result-grid{{grid-template-columns:1fr 1fr}}
+    .criterion-lab-insights{{grid-template-columns:1fr}}
+    .xray-shell{{padding:0}}
+    .xray-dialog{{width:100vw;height:100vh;border-radius:0}}
+    .xray-body{{grid-template-columns:1fr;overflow:auto}}
+    .xray-source{{min-height:52vh;border-right:0;border-bottom:1px solid var(--border)}}
+    .xray-evidence{{overflow:visible}}
+    .xray-mark{{display:none}}
+    .xray-head{{padding:.75rem}}
+    .xray-candidate{{max-width:52vw}}
+    .xray-nav{{padding:0 .38rem}}
     .tool-filter-head{{flex-direction:column}}
     .candidate-review{{padding:.65rem}}
     .review-hero{{align-items:flex-start;flex-direction:column}}
@@ -1124,6 +1481,7 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
     .kw-item{{padding:.9rem}}
     .kw-header{{align-items:flex-start}}
     .kw-citation-head{{align-items:flex-start;flex-direction:column;gap:.2rem}}
+    .kw-citation-source{{width:100%;justify-content:space-between}}
     .kw-citation .kw-relation{{text-align:left}}
     .ai-usage-overview,.ai-token-usage{{align-items:flex-start;flex-direction:column}}
     .ai-usage-overview small{{max-width:none;text-align:left}}
@@ -1132,7 +1490,7 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
     .demo-cv-float{{left:42%;top:44%;width:min(52vw,235px)}}.demo-podium,.demo-cv-shadow{{left:42%}}.demo-podium{{width:min(72vw,390px)}}
     .demo-outcomes{{top:29%;right:.45rem;width:128px;gap:7px}}.demo-outcome{{grid-template-columns:27px 1fr;gap:6px;padding:7px;border-radius:10px}}.demo-outcome-icon{{width:26px;height:26px;font-size:.75rem}}.demo-outcome strong{{font-size:.65rem}}
 }}
-@media(prefers-reduced-motion:reduce){{.exp-particle{{display:none}}.logo-icon,.logo-text,.outcome-bar,.donut-segment,.outcome-distribution i,.demo-cv,.demo-verdict-orb::after{{animation-duration:.001ms!important;animation-delay:0ms!important}}}}
+@media(prefers-reduced-motion:reduce){{.exp-particle{{display:none}}.logo-icon,.logo-text,.outcome-bar,.donut-segment,.outcome-distribution i,.demo-cv,.demo-verdict-orb::after,.xray-excerpt.is-updated{{animation-duration:.001ms!important;animation-delay:0ms!important}}}}
 /* Ambiguity-only AI verdict */
 .semantic-review-container{{padding:0}}
 .ai-scope{{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem}}
@@ -1173,7 +1531,42 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
 .ai-token-usage span{{display:block;margin-top:.22rem;color:var(--text3);font-size:.7rem;line-height:1.45}}
 .ai-token-usage-label{{font-size:.66rem;font-weight:750;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);white-space:nowrap}}
 .ai-token-unavailable{{border-style:dashed}}
-@media(max-width:768px){{.ai-usage-overview,.ai-token-usage{{align-items:flex-start;flex-direction:column}}.ai-usage-overview small{{max-width:none;text-align:left}}}}
+
+/* Evidence-backed Interview Architect */
+.interview-architect-section{{position:relative;overflow:hidden}}
+.interview-architect-section::before{{position:absolute;top:0;right:0;width:180px;height:180px;background:radial-gradient(circle,rgba(124,92,252,.13),transparent 68%);content:"";pointer-events:none}}
+.interview-architect-container{{position:relative}}
+.interview-scope{{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem}}
+.interview-scope span{{padding:.25rem .55rem;border:1px solid color-mix(in srgb,var(--accent) 26%,var(--border));border-radius:999px;background:var(--accent-g);color:var(--accent2);font-size:.68rem;font-weight:650}}
+.interview-architect-btn{{padding:.7rem 1.2rem;border:0;border-radius:var(--radius-sm);background:linear-gradient(135deg,var(--accent),#9b7cff);color:#fff;font:inherit;font-size:.88rem;font-weight:720;cursor:pointer;transition:transform .2s,box-shadow .2s,opacity .2s}}
+.interview-architect-btn:hover{{transform:translateY(-1px);box-shadow:0 5px 18px rgba(124,92,252,.3)}}
+.interview-architect-btn:disabled{{opacity:.5;cursor:not-allowed;transform:none}}
+.interview-architect-output{{display:grid;gap:.8rem;margin-top:1rem}}
+.interview-plan-summary{{padding:.72rem .8rem;border:1px solid color-mix(in srgb,var(--accent) 30%,var(--border));border-left:3px solid var(--accent);border-radius:8px;background:var(--accent-g);color:var(--text2);font-size:.82rem;line-height:1.5}}
+.interview-groups{{display:grid;grid-template-columns:1fr;gap:.7rem;align-items:start}}
+.interview-group{{min-width:0;padding:.75rem;border:1px solid var(--border);border-radius:10px;background:var(--bg3)}}
+.interview-group-head{{display:flex;align-items:flex-start;justify-content:space-between;gap:.55rem;padding-bottom:.6rem;border-bottom:1px solid var(--border)}}
+.interview-group-title{{font-size:.76rem;font-weight:760;line-height:1.25}}
+.interview-group-copy{{display:block;margin-top:.18rem;color:var(--text3);font-size:.61rem;font-weight:500;line-height:1.35}}
+.interview-group-count{{min-width:22px;padding:.12rem .38rem;border-radius:999px;background:var(--bg);color:var(--accent2);font-family:var(--mono);font-size:.62rem;text-align:center}}
+.interview-question-list{{display:grid;gap:.8rem;margin-top:.75rem}}
+.interview-question{{padding:1rem;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;background:var(--bg2)}}
+.interview-question[data-priority="HIGH"]{{border-left-color:var(--amber)}}
+.interview-question-top{{display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-bottom:.45rem}}
+.interview-question-number{{color:var(--text3);font-family:var(--mono);font-size:.6rem;font-weight:700}}
+.interview-priority{{padding:.13rem .38rem;border-radius:999px;background:var(--accent-g);color:var(--accent2);font-size:.56rem;font-weight:780;letter-spacing:.06em}}
+.interview-question[data-priority="HIGH"] .interview-priority{{background:var(--amber-g);color:var(--amber)}}
+.interview-question-text{{color:var(--text);font-size:.79rem;font-weight:700;line-height:1.6}}
+.interview-rationale{{margin-top:.65rem;color:var(--text2);font-size:.68rem;line-height:1.58}}
+.interview-listen{{margin-top:.9rem;padding:.68rem .75rem;border-radius:7px;background:var(--green-g);color:var(--text2);font-size:.68rem;line-height:1.58}}
+.interview-listen strong{{color:var(--green);font-weight:720}}
+.interview-source-label{{display:block;margin-top:1rem;margin-bottom:.3rem;color:var(--text3);font-size:.57rem;font-weight:740;letter-spacing:.07em;text-transform:uppercase}}
+.interview-question-top+.interview-source-label{{margin-top:.15rem}}
+.interview-source{{margin-top:.28rem;padding:.48rem .55rem;border-radius:6px;background:var(--bg);color:var(--text3);font-family:var(--mono);font-size:.61rem;line-height:1.45;white-space:pre-wrap}}
+.interview-no-signal{{padding:.75rem .2rem .15rem;color:var(--text3);font-size:.65rem;font-style:italic;line-height:1.45}}
+.interview-usage{{color:var(--text3);font-size:.62rem;text-align:right}}
+
+@media(max-width:768px){{.ai-usage-overview,.ai-token-usage{{align-items:flex-start;flex-direction:column}}.ai-usage-overview small{{max-width:none;text-align:left}}.interview-usage{{text-align:left}}}}
 </style>
 </head>
 <body>
@@ -1227,6 +1620,71 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
     </div>
 </header>
 
+<main class="main">
+    {tool_filter_panel}
+    {ai_usage_overview}
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Candidate</th><th>Result</th><th>Score</th><th>Exp</th><th>Keywords</th></tr></thead>
+            <tbody id="tableBody">{table_rows}</tbody>
+        </table>
+    </div>
+    <section class="criterion-lab" id="criterionLab" aria-labelledby="criterionLabTitle">
+        <header class="criterion-lab-head">
+            <div>
+                <span class="criterion-lab-kicker">Profile simulator</span>
+                <h2 id="criterionLabTitle">Kriterion Lab</h2>
+                <p>Stress-test the screening profile against this cohort. Apply recalculated verdicts to this rendered report; the profile YAML, CV files, verified evidence, and human decisions remain unchanged.</p>
+            </div>
+            <span class="criterion-lab-safety">Report only</span>
+        </header>
+        <div class="criterion-lab-grid">
+            <div class="criterion-lab-controls">
+                <div class="criterion-panel-title"><h3>Experimental profile</h3><span>Required affects verdict · Preferred tracks gaps</span></div>
+                <div class="criterion-years">
+                    <div class="criterion-years-copy"><strong>Minimum relevant experience</strong><span>Overlap-safe years from parsed career history</span></div>
+                    <output class="criterion-years-output" id="criterionYearsOutput" for="criterionYears">{config.MIN_DEVOPS_YEARS:g} yr</output>
+                    <input id="criterionYears" type="range" min="0" max="{criterion_lab_max_years}" step="0.5" value="{config.MIN_DEVOPS_YEARS:g}" aria-label="Minimum relevant experience in years">
+                </div>
+                <div class="criterion-rules">{criterion_lab_rule_controls}</div>
+                <div class="criterion-lab-actions">
+                    <button type="button" class="criterion-reset" id="criterionReset">Reset baseline</button>
+                    <button type="button" class="criterion-apply" id="criterionApply" disabled>Apply to CV results</button>
+                    <span class="criterion-adjustment-count" id="criterionAdjustmentCount">Baseline profile</span>
+                    <span class="criterion-apply-status" id="criterionApplyStatus" role="status">Preview only · profile YAML unchanged</span>
+                </div>
+            </div>
+            <div class="criterion-lab-results" aria-live="polite">
+                <div class="criterion-panel-title"><h3>Simulated cohort</h3><span id="criterionDeltaSummary">Matches the baseline profile</span></div>
+                <div class="criterion-result-grid">
+                    <div class="criterion-result criterion-result-pass"><span>Pass</span><strong id="criterionPass">0</strong><small id="criterionPassDelta"></small></div>
+                    <div class="criterion-result criterion-result-fail"><span>Fail</span><strong id="criterionFail">0</strong><small id="criterionFailDelta"></small></div>
+                    <div class="criterion-result criterion-result-amb"><span>Ambiguous</span><strong id="criterionAmbiguous">0</strong><small id="criterionAmbiguousDelta"></small></div>
+                    <div class="criterion-result criterion-result-pref"><span>Preference gaps</span><strong id="criterionPreferenceGaps">0</strong><small>candidates</small></div>
+                </div>
+                <div class="criterion-distribution" aria-hidden="true"><i class="criterion-distribution-pass" id="criterionPassBar"></i><i class="criterion-distribution-fail" id="criterionFailBar"></i><i class="criterion-distribution-amb" id="criterionAmbiguousBar"></i></div>
+                <div class="criterion-lab-insights">
+                    <section class="criterion-subpanel">
+                        <h3>Rule impact</h3>
+                        <div class="criterion-impact-list">{criterion_lab_impact_rows}</div>
+                    </section>
+                    <div>
+                        <section class="criterion-subpanel">
+                            <h3>Profile signals</h3>
+                            <div class="criterion-warning-list" id="criterionWarnings"></div>
+                        </section>
+                        <section class="criterion-subpanel" style="margin-top:.75rem">
+                            <h3>Candidate movement</h3>
+                            <div class="criterion-movement-list" id="criterionMovements"></div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <footer class="criterion-lab-foot">Kriterion Lab uses the report’s verified experience evidence. Apply updates this rendered report only; the profile YAML, CV files, verified evidence, and human decisions remain unchanged.</footer>
+    </section>
+</main>
+
 <section class="insights-stage" id="screeningStage" aria-label="Screening insights and scroll demonstration">
     <div class="insights-sticky">
         <div class="charts-column">
@@ -1268,23 +1726,44 @@ tbody td{{padding:.65rem .8rem;border-bottom:1px solid var(--border);vertical-al
     </div>
 </section>
 
-<main class="main">
-    {tool_filter_panel}
-    <div class="ai-usage-overview" id="aiUsageOverview" aria-live="polite">
-        <div class="ai-usage-overview-copy">
-            <span>Ambiguity-review AI credits</span>
-            <strong id="aiUsageTotal">No AI reviews loaded</strong>
+<div class="xray-shell" id="evidenceXray" hidden aria-hidden="true">
+    <button type="button" class="xray-backdrop" id="xrayBackdrop" aria-label="Close Evidence X-Ray"></button>
+    <section class="xray-dialog" role="dialog" aria-modal="true" aria-labelledby="xrayTitle" tabindex="-1">
+        <header class="xray-head">
+            <div class="xray-title-group">
+                <div class="xray-mark" aria-hidden="true">⌖</div>
+                <div><span class="xray-kicker">Evidence X-Ray</span><h2 id="xrayTitle">Verified requirement evidence</h2><span class="xray-candidate" id="xrayCandidate"></span></div>
+            </div>
+            <div class="xray-head-actions">
+                <button type="button" class="xray-nav" id="xrayPrevious" aria-label="Previous evidence">← Prev</button>
+                <button type="button" class="xray-nav" id="xrayNext" aria-label="Next evidence">Next →</button>
+                <button type="button" class="xray-close" id="xrayClose" aria-label="Close Evidence X-Ray">×</button>
+            </div>
+        </header>
+        <div class="xray-body">
+            <section class="xray-source" aria-label="Original CV source">
+                <div class="xray-source-head"><span>Original CV</span><span class="xray-page" id="xrayPageLabel"></span></div>
+                <div class="xray-preview" id="xrayPreview" hidden><span class="xray-loading" id="xrayLoading">Rendering cited page and verified highlight…</span><img class="xray-page-image" id="xrayPageImage" alt=""></div>
+                <div class="xray-source-fallback" id="xrayFallback" hidden><strong id="xrayFallbackTitle">Source preview unavailable</strong><span id="xrayFallbackCopy"></span><a class="xray-open-original" id="xrayFallbackLink" target="_blank" rel="noopener">Open original CV</a></div>
+            </section>
+            <aside class="xray-evidence" aria-label="Verified evidence details">
+                <div class="xray-badges"><span class="xray-badge xray-badge-primary" id="xrayRequirement"></span><span class="xray-badge" id="xrayRelationship"></span><span class="xray-badge" id="xrayMatchedTerm"></span></div>
+                <div class="xray-facts">
+                    <div class="xray-fact"><span>Candidate</span><strong id="xrayFactCandidate"></strong></div>
+                    <div class="xray-fact"><span>Source page</span><strong id="xrayFactPage"></strong></div>
+                    <div class="xray-fact"><span>Role context</span><strong id="xrayRoleContext"></strong></div>
+                </div>
+                <h3>Exact extracted evidence</h3>
+                <blockquote class="xray-excerpt" id="xrayExcerpt"></blockquote>
+                <div class="xray-note">The matched term is highlighted in the verified extracted excerpt. The source viewer opens the cited PDF page for direct comparison.</div>
+                <a class="xray-open-original" id="xrayOpenOriginal" target="_blank" rel="noopener" style="margin-top:.75rem">Open cited page in a new tab</a>
+            </aside>
         </div>
-        <small id="aiUsageBreakdown">Exact Copilot credit usage appears after ambiguous CV recommendations are generated or loaded.</small>
-    </div>
-    <div class="table-wrap">
-        <table>
-            <thead><tr><th>Candidate</th><th>Result</th><th>Score</th><th>Exp</th><th>Keywords</th></tr></thead>
-            <tbody id="tableBody">{table_rows}</tbody>
-        </table>
-    </div>
-</main>
+    </section>
+</div>
 
+<script type="application/json" id="criterionLabData">{criterion_lab_data_json}</script>
+<script type="application/json" id="evidenceXrayData">{evidence_xray_data_json}</script>
 <script>
 // Theme
 function toggleTheme(){{
@@ -1293,6 +1772,151 @@ function toggleTheme(){{
     document.getElementById('themeBtn').textContent=t==='dark'?'\U0001f319 Dark':'☀️ Light';
 }}
 (()=>{{const s=localStorage.getItem('rt-theme');if(s){{document.documentElement.dataset.theme=s;document.getElementById('themeBtn').textContent=s==='dark'?'\U0001f319 Dark':'☀️ Light';}}}})();
+
+// Evidence X-Ray: exact excerpt plus the original CV opened at its cited page.
+var evidenceXrayDataNode=document.getElementById('evidenceXrayData');
+var evidenceXrayItems=evidenceXrayDataNode?JSON.parse(evidenceXrayDataNode.textContent):[];
+var evidenceXrayIndexById=new Map(evidenceXrayItems.map(function(item,index){{return[item.id,index];}}));
+var evidenceXrayIndicesByCandidate=new Map();
+evidenceXrayItems.forEach(function(item,index){{
+    if(!evidenceXrayIndicesByCandidate.has(item.candidate))evidenceXrayIndicesByCandidate.set(item.candidate,[]);
+    evidenceXrayIndicesByCandidate.get(item.candidate).push(index);
+}});
+var evidenceXrayCurrentIndex=-1;
+var evidenceXrayPreviousFocus=null;
+var evidenceXrayFrameToken=0;
+
+function xraySetText(id,value){{var node=document.getElementById(id);if(node)node.textContent=String(value||'');}}
+function xraySourceUrl(item){{
+    return item.sourceUrl?item.sourceUrl+'#page='+encodeURIComponent(item.page)+'&zoom=page-width&search='+encodeURIComponent(item.matchedTerm||item.requirement||''):'';
+}}
+function xrayPreviewUrl(item){{
+    return item.previewUrl?item.previewUrl+'?page='+encodeURIComponent(item.page)+'&term='+encodeURIComponent(item.matchedTerm||item.requirement||''):'';
+}}
+function renderXrayExcerpt(text,matchedTerm){{
+    var container=document.getElementById('xrayExcerpt');
+    if(!container)return 0;
+    container.classList.remove('is-updated');
+    container.innerHTML='';
+    var source=String(text||''),term=String(matchedTerm||'');
+    if(!term){{container.appendChild(document.createTextNode(source));void container.offsetWidth;container.classList.add('is-updated');return 0;}}
+    var lowerSource=source.toLowerCase(),lowerTerm=term.toLowerCase(),cursor=0,index=lowerSource.indexOf(lowerTerm),matches=0;
+    while(index!==-1){{
+        if(index>cursor)container.appendChild(document.createTextNode(source.slice(cursor,index)));
+        var mark=document.createElement('mark');mark.textContent=source.slice(index,index+term.length);container.appendChild(mark);
+        matches+=1;cursor=index+term.length;index=lowerSource.indexOf(lowerTerm,cursor);
+    }}
+    if(cursor<source.length)container.appendChild(document.createTextNode(source.slice(cursor)));
+    void container.offsetWidth;container.classList.add('is-updated');
+    return matches;
+}}
+function xrayCandidateSequence(index){{
+    var item=evidenceXrayItems[index];
+    return item?(evidenceXrayIndicesByCandidate.get(item.candidate)||[]):[];
+}}
+function navigateEvidenceXray(offset){{
+    var sequence=xrayCandidateSequence(evidenceXrayCurrentIndex);
+    var position=sequence.indexOf(evidenceXrayCurrentIndex);
+    var nextPosition=position+offset;
+    if(position===-1||nextPosition<0||nextPosition>=sequence.length)return;
+    renderEvidenceXray(sequence[nextPosition]);
+}}
+function loadXrayPagePreview(image,loading,previewUrl,item){{
+    evidenceXrayFrameToken+=1;
+    var token=evidenceXrayFrameToken;
+    image.classList.add('is-loading');
+    image.alt='Original CV page '+item.page+' for '+item.candidate+' with '+item.matchedTerm+' highlighted';
+    image.onload=function(){{if(token!==evidenceXrayFrameToken)return;image.classList.remove('is-loading');if(loading)loading.hidden=true;}};
+    image.onerror=function(){{
+        if(token!==evidenceXrayFrameToken)return;
+        var preview=document.getElementById('xrayPreview'),fallback=document.getElementById('xrayFallback');
+        if(preview)preview.hidden=true;if(fallback)fallback.hidden=false;
+        xraySetText('xrayFallbackTitle','Highlighted preview unavailable');
+        xraySetText('xrayFallbackCopy','Kriterion could not render this cited PDF page. Open the original document and compare it with the highlighted verified excerpt.');
+    }};
+    image.removeAttribute('src');
+    if(loading)loading.hidden=false;
+    requestAnimationFrame(function(){{
+        if(token===evidenceXrayFrameToken)image.src=previewUrl;
+    }});
+}}
+function renderEvidenceXray(index){{
+    if(index<0||index>=evidenceXrayItems.length)return;
+    evidenceXrayCurrentIndex=index;
+    var item=evidenceXrayItems[index],sourceUrl=xraySourceUrl(item),previewUrl=xrayPreviewUrl(item);
+    xraySetText('xrayCandidate',item.candidate);
+    xraySetText('xrayRequirement',item.requirement);
+    xraySetText('xrayRelationship',item.relationship||'direct evidence');
+    xraySetText('xrayFactCandidate',item.candidate);
+    xraySetText('xrayFactPage','Page '+item.page);
+    xraySetText('xrayRoleContext',item.roleContext||'Role header not confidently mapped');
+    var highlightedMatches=renderXrayExcerpt(item.snippet,item.matchedTerm);
+    xraySetText('xrayMatchedTerm','Matched: '+item.matchedTerm+(highlightedMatches?' · highlighted':' · verify manually'));
+    var sequence=xrayCandidateSequence(index),position=sequence.indexOf(index);
+    xraySetText('xrayPageLabel','Cited page '+item.page+' · Evidence '+(position+1)+' of '+sequence.length);
+    var preview=document.getElementById('xrayPreview');
+    var image=document.getElementById('xrayPageImage');
+    var loading=document.getElementById('xrayLoading');
+    var fallback=document.getElementById('xrayFallback');
+    var fallbackLink=document.getElementById('xrayFallbackLink');
+    var openOriginal=document.getElementById('xrayOpenOriginal');
+    if(preview)preview.hidden=!item.previewAvailable;
+    if(image){{
+        if(item.previewAvailable)loadXrayPagePreview(image,loading,previewUrl,item);
+        else{{evidenceXrayFrameToken+=1;image.removeAttribute('src');}}
+    }}
+    if(fallback)fallback.hidden=Boolean(item.previewAvailable);
+    if(!item.previewAvailable){{
+        xraySetText('xrayFallbackTitle',item.sourceUrl?'Document preview unavailable':'Original CV link unavailable');
+        xraySetText('xrayFallbackCopy',item.sourceUrl?'This source format cannot be embedded. Open the original document and compare it with the verified excerpt.':'This static report was generated without a served CV folder. The verified extracted excerpt remains available for review.');
+    }}
+    [fallbackLink,openOriginal].forEach(function(link){{
+        if(!link)return;
+        link.hidden=!item.sourceUrl;
+        if(item.sourceUrl)link.href=sourceUrl;else link.removeAttribute('href');
+    }});
+    var previous=document.getElementById('xrayPrevious'),next=document.getElementById('xrayNext');
+    if(previous)previous.disabled=position<=0;
+    if(next)next.disabled=position<0||position>=sequence.length-1;
+}}
+function openEvidenceXray(id,trigger){{
+    var index=evidenceXrayIndexById.get(id),shell=document.getElementById('evidenceXray');
+    if(index===undefined||!shell)return;
+    evidenceXrayPreviousFocus=trigger||document.activeElement;
+    renderEvidenceXray(index);
+    shell.hidden=false;shell.setAttribute('aria-hidden','false');document.body.classList.add('xray-open');
+    var close=document.getElementById('xrayClose');if(close)close.focus();
+}}
+function closeEvidenceXray(){{
+    var shell=document.getElementById('evidenceXray'),image=document.getElementById('xrayPageImage');
+    if(!shell||shell.hidden)return;
+    shell.hidden=true;shell.setAttribute('aria-hidden','true');document.body.classList.remove('xray-open');
+    evidenceXrayFrameToken+=1;if(image)image.removeAttribute('src');
+    if(evidenceXrayPreviousFocus&&typeof evidenceXrayPreviousFocus.focus==='function')evidenceXrayPreviousFocus.focus();
+}}
+document.querySelectorAll('.xray-open-btn').forEach(function(button){{
+    button.addEventListener('click',function(event){{event.preventDefault();event.stopPropagation();openEvidenceXray(button.dataset.xrayId,button);}});
+}});
+var xrayClose=document.getElementById('xrayClose'),xrayBackdrop=document.getElementById('xrayBackdrop');
+if(xrayClose)xrayClose.addEventListener('click',closeEvidenceXray);
+if(xrayBackdrop)xrayBackdrop.addEventListener('click',closeEvidenceXray);
+var xrayPrevious=document.getElementById('xrayPrevious'),xrayNext=document.getElementById('xrayNext');
+if(xrayPrevious)xrayPrevious.addEventListener('click',function(){{navigateEvidenceXray(-1);}});
+if(xrayNext)xrayNext.addEventListener('click',function(){{navigateEvidenceXray(1);}});
+document.addEventListener('keydown',function(event){{
+    var shell=document.getElementById('evidenceXray');
+    if(!shell||shell.hidden)return;
+    if(event.key==='Escape'){{event.preventDefault();closeEvidenceXray();return;}}
+    if(event.key==='ArrowLeft'){{event.preventDefault();navigateEvidenceXray(-1);}}
+    if(event.key==='ArrowRight'){{event.preventDefault();navigateEvidenceXray(1);}}
+    if(event.key==='Tab'){{
+        var focusable=Array.from(shell.querySelectorAll('button:not(:disabled),a[href]')).filter(function(node){{return node.offsetParent!==null;}});
+        if(!focusable.length)return;
+        var first=focusable[0],last=focusable[focusable.length-1];
+        if(event.shiftKey&&document.activeElement===first){{event.preventDefault();last.focus();}}
+        else if(!event.shiftKey&&document.activeElement===last){{event.preventDefault();first.focus();}}
+    }}
+}});
 
 // Native scroll-driven podium screening demonstration
 const screeningStage=document.getElementById('screeningStage');
@@ -1383,6 +2007,273 @@ window.addEventListener('scroll',requestScreeningRender,{{passive:true}});
 window.addEventListener('resize',requestScreeningRender);
 renderScreeningDemo();
 
+// Kriterion Lab: isolated cohort simulation over verified report evidence.
+var criterionLabNode=document.getElementById('criterionLabData');
+var criterionLabPayload=criterionLabNode?JSON.parse(criterionLabNode.textContent):{{minimumYears:0,rules:[],candidates:[]}};
+var criterionLabDefault={{minimumYears:Number(criterionLabPayload.minimumYears)||0,rules:{{}}}};
+criterionLabPayload.rules.forEach(function(rule){{criterionLabDefault.rules[rule]='required';}});
+var criterionLabState={{minimumYears:criterionLabDefault.minimumYears,rules:Object.assign({{}},criterionLabDefault.rules)}};
+function criterionLabStateKey(state){{
+    return JSON.stringify({{minimumYears:Number(state.minimumYears),rules:criterionLabPayload.rules.map(function(rule){{return[rule,state.rules[rule]];}})}});
+}}
+var criterionLabAppliedStateKey=criterionLabStateKey(criterionLabDefault);
+var criterionLabHasApplied=false;
+
+function criterionLabClassify(candidate,state){{
+    var requiredRules=criterionLabPayload.rules.filter(function(rule){{return state.rules[rule]==='required';}});
+    var needsReview=Boolean(candidate.layoutReview||candidate.dateReview)||requiredRules.some(function(rule){{
+        return candidate.evidence[rule]==='review';
+    }});
+    if(needsReview)return 'ambiguous';
+    var missingRequired=requiredRules.some(function(rule){{return candidate.evidence[rule]!=='found';}});
+    var fixedFailure=Array.isArray(candidate.fixedFailures)&&candidate.fixedFailures.length>0;
+    if(fixedFailure||missingRequired||Number(candidate.years)<Number(state.minimumYears))return 'fail';
+    return 'pass';
+}}
+
+function criterionLabEvaluate(state){{
+    var counts={{pass:0,fail:0,ambiguous:0,preferenceGaps:0,statuses:[]}};
+    var preferredRules=criterionLabPayload.rules.filter(function(rule){{return state.rules[rule]==='preferred';}});
+    criterionLabPayload.candidates.forEach(function(candidate){{
+        var status=criterionLabClassify(candidate,state);
+        counts[status]+=1;
+        counts.statuses.push(status);
+        if(preferredRules.some(function(rule){{return candidate.evidence[rule]!=='found';}}))counts.preferenceGaps+=1;
+    }});
+    return counts;
+}}
+
+var criterionLabBaseline=criterionLabEvaluate(criterionLabDefault);
+function criterionLabDelta(value,baseline){{
+    var delta=value-baseline;
+    return delta===0?'no change':(delta>0?'+':'')+delta+' vs baseline';
+}}
+function criterionLabSetText(id,value){{
+    var node=document.getElementById(id);
+    if(node)node.textContent=String(value);
+}}
+function criterionLabAlternative(rule,mode){{
+    var state={{minimumYears:criterionLabState.minimumYears,rules:Object.assign({{}},criterionLabState.rules)}};
+    if(rule==='__years__')state.minimumYears=0;else state.rules[rule]=mode;
+    return criterionLabEvaluate(state);
+}}
+function criterionLabImpactRow(rule,current){{
+    var row=document.querySelector('.criterion-impact-row[data-impact-rule="'+CSS.escape(rule)+'"]');
+    if(!row)return;
+    var copy=row.querySelector('.criterion-impact-copy');
+    var bar=row.querySelector('.criterion-impact-track i');
+    var total=Math.max(criterionLabPayload.candidates.length,1);
+    var affected=0,passGain=0,message='';
+    if(rule==='__years__'){{
+        affected=criterionLabPayload.candidates.filter(function(candidate){{return Number(candidate.years)<criterionLabState.minimumYears;}}).length;
+        passGain=Math.max(0,criterionLabAlternative(rule,'off').pass-current.pass);
+        message=criterionLabState.minimumYears===0?'Inactive':' '+affected+' below · +'+passGain+' passes if removed';
+    }}else{{
+        var mode=criterionLabState.rules[rule];
+        affected=criterionLabPayload.candidates.filter(function(candidate){{return candidate.evidence[rule]!=='found';}}).length;
+        if(mode==='required'){{
+            passGain=Math.max(0,criterionLabAlternative(rule,'preferred').pass-current.pass);
+            message=affected+' blocked/reviewed · +'+passGain+' passes if relaxed';
+        }}else if(mode==='preferred'){{
+            message=affected+' preference gaps · no verdict effect';
+        }}else{{
+            affected=0;
+            message='Not evaluated';
+        }}
+    }}
+    if(copy)copy.textContent=message.trim();
+    if(bar)bar.style.width=Math.round(affected/total*100)+'%';
+}}
+function criterionLabRenderWarnings(current){{
+    var container=document.getElementById('criterionWarnings');
+    if(!container)return;
+    container.innerHTML='';
+    var total=criterionLabPayload.candidates.length;
+    var warnings=[];
+    var requiredRules=criterionLabPayload.rules.filter(function(rule){{return criterionLabState.rules[rule]==='required';}});
+    if(total===0){{
+        warnings.push({{text:'No candidates are available for simulation.',positive:false}});
+    }}else{{
+        var passRate=current.pass/total;
+        if(current.pass===0)warnings.push({{text:'Zero-pass profile: every candidate is currently blocked or unresolved.',positive:false}});
+        else if(passRate<.1)warnings.push({{text:'Highly restrictive profile: fewer than 10% of candidates pass.',positive:false}});
+        if(requiredRules.length===0)warnings.push({{text:'No technology gate is active; verdicts rely on experience and fixed restrictions.',positive:false}});
+        var bottlenecks=requiredRules.map(function(rule){{
+            return{{rule:rule,count:criterionLabPayload.candidates.filter(function(candidate){{return candidate.evidence[rule]!=='found';}}).length}};
+        }}).sort(function(a,b){{return b.count-a.count;}});
+        if(bottlenecks.length&&bottlenecks[0].count/total>=.7){{
+            warnings.push({{text:bottlenecks[0].rule+' is the strongest bottleneck, affecting '+bottlenecks[0].count+' candidates.',positive:false}});
+        }}
+        var passChange=current.pass-criterionLabBaseline.pass;
+        if(passChange>0)warnings.push({{text:'This experiment adds '+passChange+' potential pass'+(passChange===1?'':'es')+' versus baseline.',positive:true}});
+        if(!warnings.length)warnings.push({{text:'The experimental profile has no severe cohort-level bottleneck.',positive:true}});
+    }}
+    warnings.slice(0,3).forEach(function(item){{
+        var node=document.createElement('div');
+        node.className='criterion-warning'+(item.positive?' is-positive':'');
+        node.textContent=item.text;
+        container.appendChild(node);
+    }});
+}}
+function criterionLabRenderMovements(current){{
+    var container=document.getElementById('criterionMovements');
+    if(!container)return;
+    container.innerHTML='';
+    var movements=[];
+    current.statuses.forEach(function(status,index){{
+        var before=criterionLabBaseline.statuses[index];
+        if(status!==before)movements.push({{name:criterionLabPayload.candidates[index].name,before:before,after:status}});
+    }});
+    if(!movements.length){{
+        var empty=document.createElement('div');
+        empty.className='criterion-empty';
+        empty.textContent='No candidate verdicts move under this experiment.';
+        container.appendChild(empty);
+        return;
+    }}
+    movements.slice(0,5).forEach(function(item){{
+        var row=document.createElement('div');row.className='criterion-movement';
+        var name=document.createElement('span');name.className='criterion-movement-name';name.textContent=item.name;
+        var change=document.createElement('span');change.className='criterion-movement-change';change.textContent=item.before.toUpperCase()+' → '+item.after.toUpperCase();
+        change.style.color=item.after==='pass'?'var(--green)':item.after==='fail'?'var(--red)':'var(--amber)';
+        row.appendChild(name);row.appendChild(change);container.appendChild(row);
+    }});
+    if(movements.length>5){{
+        var more=document.createElement('div');more.className='criterion-movement-more';more.textContent='+'+(movements.length-5)+' more candidate changes';container.appendChild(more);
+    }}
+}}
+function updateCriterionLab(){{
+    var current=criterionLabEvaluate(criterionLabState);
+    criterionLabSetText('criterionYearsOutput',Number(criterionLabState.minimumYears).toFixed(1).replace('.0','')+' yr');
+    criterionLabSetText('criterionPass',current.pass);
+    criterionLabSetText('criterionFail',current.fail);
+    criterionLabSetText('criterionAmbiguous',current.ambiguous);
+    criterionLabSetText('criterionPreferenceGaps',current.preferenceGaps);
+    criterionLabSetText('criterionPassDelta',criterionLabDelta(current.pass,criterionLabBaseline.pass));
+    criterionLabSetText('criterionFailDelta',criterionLabDelta(current.fail,criterionLabBaseline.fail));
+    criterionLabSetText('criterionAmbiguousDelta',criterionLabDelta(current.ambiguous,criterionLabBaseline.ambiguous));
+    var adjustments=(criterionLabState.minimumYears===criterionLabDefault.minimumYears?0:1)+criterionLabPayload.rules.filter(function(rule){{return criterionLabState.rules[rule]!==criterionLabDefault.rules[rule];}}).length;
+    criterionLabSetText('criterionAdjustmentCount',adjustments?adjustments+' adjustment'+(adjustments===1?'':'s')+' from baseline':'Baseline profile');
+    var moved=current.statuses.filter(function(status,index){{return status!==criterionLabBaseline.statuses[index];}}).length;
+    criterionLabSetText('criterionDeltaSummary',moved?moved+' candidate verdict'+(moved===1?' moves':'s move'):'Matches the baseline profile');
+    var passBar=document.getElementById('criterionPassBar'),failBar=document.getElementById('criterionFailBar'),ambBar=document.getElementById('criterionAmbiguousBar');
+    if(passBar)passBar.style.flex=String(current.pass);
+    if(failBar)failBar.style.flex=String(current.fail);
+    if(ambBar)ambBar.style.flex=String(current.ambiguous);
+    criterionLabImpactRow('__years__',current);
+    criterionLabPayload.rules.forEach(function(rule){{criterionLabImpactRow(rule,current);}});
+    criterionLabRenderWarnings(current);
+    criterionLabRenderMovements(current);
+    var applyButton=document.getElementById('criterionApply');
+    var applyStatus=document.getElementById('criterionApplyStatus');
+    var hasPendingChanges=criterionLabStateKey(criterionLabState)!==criterionLabAppliedStateKey;
+    if(applyButton)applyButton.disabled=!hasPendingChanges;
+    if(applyStatus){{
+        applyStatus.classList.toggle('is-applied',!hasPendingChanges&&criterionLabHasApplied);
+        applyStatus.textContent=hasPendingChanges?'Preview changed · Apply to update CV results; profile YAML stays unchanged':criterionLabHasApplied?'Applied to this report · profile YAML unchanged':'Preview only · profile YAML unchanged';
+    }}
+}}
+
+function criterionLabUpdateDashboard(current){{
+    var total=criterionLabPayload.candidates.length;
+    var statusUi={{
+        pass:{{count:current.pass,box:'.stat-pass',demo:'.demo-outcome-pass strong',label:'passed'}},
+        fail:{{count:current.fail,box:'.stat-fail',demo:'.demo-outcome-fail strong',label:'failed'}},
+        ambiguous:{{count:current.ambiguous,box:'.stat-amb',demo:'.demo-outcome-amb strong',label:'ambiguous'}}
+    }};
+    Object.keys(statusUi).forEach(function(status){{
+        var ui=statusUi[status],pct=total?ui.count/total*100:0,box=document.querySelector(ui.box);
+        if(box){{
+            var value=box.querySelector('.stat-val'),percent=box.querySelector('.stat-pct');
+            if(value)value.textContent=String(ui.count);
+            if(percent)percent.textContent=pct.toFixed(1)+'%';
+            box.setAttribute('aria-label','Show '+ui.count+' '+ui.label+' candidates');
+        }}
+        var demo=document.querySelector(ui.demo);
+        if(demo)demo.textContent=String(ui.count);
+    }});
+    var passPct=total?current.pass/total*100:0,failPct=total?current.fail/total*100:0,ambiguousPct=total?current.ambiguous/total*100:0;
+    var donutValue=document.querySelector('.donut-center strong');
+    if(donutValue)donutValue.textContent=Math.round(passPct)+'%';
+    var segments=document.querySelectorAll('.donut-segment');
+    var segmentValues=[passPct,failPct,ambiguousPct],segmentOffsets=[0,-passPct,-passPct-failPct];
+    segments.forEach(function(segment,index){{
+        var value=segmentValues[index]||0;
+        segment.style.setProperty('--dash',value.toFixed(2)+' '+(100-value).toFixed(2));
+        segment.style.setProperty('--offset',String(segmentOffsets[index]||0));
+    }});
+    var legendValues=[current.pass,current.fail,current.ambiguous];
+    document.querySelectorAll('.donut-legend .legend-item b').forEach(function(node,index){{node.textContent=String(legendValues[index]||0);}});
+    var distributionValues=[current.pass,current.fail,current.ambiguous];
+    document.querySelectorAll('.outcome-distribution i').forEach(function(node,index){{node.style.flex=String(distributionValues[index]||0);}});
+}}
+
+function criterionLabApplyResults(){{
+    var current=criterionLabEvaluate(criterionLabState);
+    var appliedExperiment=criterionLabStateKey(criterionLabState)!==criterionLabStateKey(criterionLabDefault);
+    current.statuses.forEach(function(status,index){{
+        var row=document.querySelector('#tableBody .data-row[data-idx="'+index+'"]');
+        var detail=document.querySelector('#tableBody .detail-row[data-idx="'+index+'"]');
+        var label=status.toUpperCase();
+        if(row){{
+            row.dataset.status=status;
+            row.classList.remove('row-pass','row-fail','row-ambiguous');
+            row.classList.add('row-'+status);
+            var pill=row.querySelector('.pill');
+            if(pill){{pill.classList.remove('pill-pass','pill-fail','pill-ambiguous');pill.classList.add('pill-'+status);pill.textContent=label;}}
+            var scoreFill=row.querySelector('.score-bar-fill');
+            if(scoreFill){{scoreFill.classList.remove('score-fill-pass','score-fill-fail','score-fill-ambiguous');scoreFill.classList.add('score-fill-'+status);}}
+        }}
+        if(detail){{
+            detail.dataset.status=status;
+            var hero=detail.querySelector('.review-hero');
+            if(hero){{
+                hero.classList.remove('review-hero-pass','review-hero-fail','review-hero-ambiguous');
+                hero.classList.add('review-hero-'+status);
+                var icon=hero.querySelector('.outcome-icon'),title=hero.querySelector('h3'),copy=hero.querySelector('.review-outcome p'),eyebrow=hero.querySelector('.review-eyebrow');
+                if(icon)icon.textContent=status==='pass'?'✓':status==='fail'?'✗':'⚠';
+                if(title)title.textContent=label;
+                if(copy)copy.textContent=appliedExperiment?'Recalculated from Kriterion Lab changes; profile YAML unchanged':status==='pass'?'Meets the configured screening requirements':status==='fail'?'Does not meet one or more screening requirements':'Needs a reviewer to resolve uncertain evidence';
+                if(eyebrow)eyebrow.textContent=appliedExperiment?'Kriterion Lab outcome':'Screening outcome';
+            }}
+            var rationale=detail.querySelector('.decision-rationale');
+            if(rationale){{rationale.classList.remove('rationale-pass','rationale-fail','rationale-ambiguous');rationale.classList.add('rationale-'+status);}}
+            var note=detail.querySelector('.lab-application-note');
+            if(note)note.hidden=!appliedExperiment;
+        }}
+    }});
+    criterionLabUpdateDashboard(current);
+    criterionLabAppliedStateKey=criterionLabStateKey(criterionLabState);
+    criterionLabHasApplied=true;
+    applyCandidateFilters();
+    updateCriterionLab();
+}}
+
+var criterionYears=document.getElementById('criterionYears');
+if(criterionYears)criterionYears.addEventListener('input',function(){{criterionLabState.minimumYears=Number(criterionYears.value);updateCriterionLab();}});
+document.querySelectorAll('.criterion-mode-btn').forEach(function(button){{
+    button.addEventListener('click',function(){{
+        var row=button.closest('[data-criterion-rule]');
+        if(!row)return;
+        var rule=row.dataset.criterionRule;
+        criterionLabState.rules[rule]=button.dataset.mode;
+        row.querySelectorAll('.criterion-mode-btn').forEach(function(peer){{var active=peer===button;peer.classList.toggle('is-active',active);peer.setAttribute('aria-pressed',active?'true':'false');}});
+        updateCriterionLab();
+    }});
+}});
+var criterionReset=document.getElementById('criterionReset');
+if(criterionReset)criterionReset.addEventListener('click',function(){{
+    criterionLabState={{minimumYears:criterionLabDefault.minimumYears,rules:Object.assign({{}},criterionLabDefault.rules)}};
+    if(criterionYears)criterionYears.value=String(criterionLabState.minimumYears);
+    document.querySelectorAll('[data-criterion-rule]').forEach(function(row){{
+        row.querySelectorAll('.criterion-mode-btn').forEach(function(button){{var active=button.dataset.mode==='required';button.classList.toggle('is-active',active);button.setAttribute('aria-pressed',active?'true':'false');}});
+    }});
+    updateCriterionLab();
+}});
+var criterionApply=document.getElementById('criterionApply');
+if(criterionApply)criterionApply.addEventListener('click',criterionLabApplyResults);
+updateCriterionLab();
+
 // Combined outcome + tool filters. Multiple tools use AND semantics.
 var activeStatusFilter='all';
 var selectedToolFilters=new Set();
@@ -1472,6 +2363,9 @@ document.querySelectorAll('.data-row a').forEach(link=>{{
 
 // Ambiguity-only AI verdict
 var autoAiReview={"true" if auto_ai_review else "false"};
+var aiProvider={json.dumps(ai_provider)};
+var aiProviderName={json.dumps(ai_provider_name)};
+var showAiUsage={"true" if show_ai_usage else "false"};
 var hashToken=(location.hash.match(/token=([^&]+)/)||[])[1]||'';
 var aiToken=hashToken?decodeURIComponent(hashToken):'';
 try{{
@@ -1488,8 +2382,8 @@ function showAiError(node,message){{
     node.innerHTML='';
     var error=document.createElement('div');
     error.className='ai-error';
-    error.appendChild(semanticElement('strong','ai-error-title','Recommendation unavailable'));
-    error.appendChild(semanticElement('span','ai-error-detail',message||'Copilot could not produce a usable response.'));
+    error.appendChild(semanticElement('strong','ai-error-title','AI verdict unavailable'));
+    error.appendChild(semanticElement('span','ai-error-detail',message||(aiProviderName+' could not produce a usable response.')));
     node.appendChild(error);
 }}
 
@@ -1498,6 +2392,124 @@ function semanticElement(tag,className,text){{
     node.className=className;
     node.textContent=String(text||'');
     return node;
+}}
+
+function showInterviewError(node,message){{
+    node.innerHTML='';
+    var error=semanticElement('div','ai-error','');
+    error.appendChild(semanticElement('strong','ai-error-title','Interview plan unavailable'));
+    error.appendChild(semanticElement('span','ai-error-detail',message||(aiProviderName+' could not produce a verified interview plan.')));
+    node.appendChild(error);
+}}
+
+var interviewCategories=[
+    {{key:'AMBIGUOUS_EXPERIENCE',title:'Ambiguous evidence',copy:'Uncertain scope, ownership, dates, or requirement evidence'}},
+    {{key:'STRONG_CLAIM',title:'Strong claims',copy:'Quantified results that need their baseline, measurement, testing, and personal attribution verified'}},
+    {{key:'CAREER_TIMELINE',title:'Timeline signals',copy:'Verified career gaps, overlaps, date conflicts, or unclear transitions'}}
+];
+
+function renderInterviewPlan(container,plan){{
+    var output=container.querySelector('.interview-architect-output');
+    output.innerHTML='';
+    output.appendChild(semanticElement('div','interview-plan-summary',plan.summary));
+    var groups=semanticElement('div','interview-groups','');
+    var questions=Array.isArray(plan.questions)?plan.questions:[];
+    var issueNumber=0;
+    interviewCategories.forEach(function(category){{
+        var items=questions.filter(function(item){{return item.category===category.key;}});
+        var group=semanticElement('section','interview-group','');
+        var head=semanticElement('div','interview-group-head','');
+        var titleWrap=semanticElement('div','','');
+        titleWrap.appendChild(semanticElement('div','interview-group-title',category.title));
+        titleWrap.appendChild(semanticElement('span','interview-group-copy',category.copy));
+        head.appendChild(titleWrap);
+        head.appendChild(semanticElement('span','interview-group-count',String(items.length)));
+        group.appendChild(head);
+        if(!items.length){{
+            group.appendChild(semanticElement('div','interview-no-signal','No defensible CV signal found — no question generated.'));
+        }}else{{
+            var list=semanticElement('div','interview-question-list','');
+            items.forEach(function(item){{
+                issueNumber+=1;
+                var card=semanticElement('article','interview-question','');
+                card.dataset.priority=item.priority;
+                var top=semanticElement('div','interview-question-top','');
+                top.appendChild(semanticElement('span','interview-question-number','ISSUE '+String(issueNumber).padStart(2,'0')));
+                top.appendChild(semanticElement('span','interview-priority',item.priority+' PRIORITY'));
+                card.appendChild(top);
+                card.appendChild(semanticElement('span','interview-source-label','Detected issue'));
+                card.appendChild(semanticElement('div','interview-question-text',item.issue||item.rationale));
+                card.appendChild(semanticElement('div','interview-rationale',item.rationale));
+                card.appendChild(semanticElement('span','interview-source-label','Single interview question'));
+                card.appendChild(semanticElement('div','interview-question-text',item.question));
+                var listen=semanticElement('div','interview-listen','');
+                listen.appendChild(semanticElement('strong','','Listen for: '));
+                listen.appendChild(document.createTextNode(String(item.what_to_listen_for||'')));
+                card.appendChild(listen);
+                card.appendChild(semanticElement('span','interview-source-label','CV evidence anchor'));
+                (item.source_quotes||[]).forEach(function(quote){{
+                    card.appendChild(semanticElement('blockquote','interview-source',quote));
+                }});
+                list.appendChild(card);
+            }});
+            group.appendChild(list);
+        }}
+        groups.appendChild(group);
+    }});
+    output.appendChild(groups);
+    var usage=plan.token_usage;
+    if(showAiUsage&&usage&&usage.available===true&&Number.isFinite(Number(usage.ai_credits))){{
+        var calls=tokenCount(usage.ai_calls);
+        var sharedPrefix=usage.shared_analysis===true?'Shared analysis · ':'';
+        output.appendChild(semanticElement('div','interview-usage',sharedPrefix+formatCreditCount(usage.ai_credits)+' GitHub AI credit'+(Number(usage.ai_credits)===1?'':'s')+' · '+formatTokenCount(calls)+' AI call'+(calls===1?'':'s')));
+    }}
+}}
+
+function requestInterviewPlan(btn){{return requestPassedCandidateAnalysis(btn);}}
+
+var passedCandidateAnalysisState={{}};
+
+function requestPassedCandidateAnalysis(btn){{
+    var source=btn.closest('.interview-architect-container');
+    var idx=source.dataset.idx;
+    var file=source.dataset.file;
+    var output=source.querySelector('.interview-architect-output');
+    if(!aiToken){{
+        showInterviewError(output,'Interview Architect requires the locally served dashboard. Run Kriterion again to open it.');
+        return Promise.resolve();
+    }}
+    var state=passedCandidateAnalysisState[idx];
+    if(!state){{
+        state={{promise:null,data:null}};
+        passedCandidateAnalysisState[idx]=state;
+    }}
+
+    if(state.data){{
+        renderInterviewPlan(source,state.data.plan);
+        btn.style.display='none';
+        return Promise.resolve(state.data);
+    }}
+    btn.disabled=true;
+    btn.textContent='Analyzing candidate...';
+    output.innerHTML='<div class="ai-loading"><div class="spinner"></div><span>Detecting issues and building one question for each...</span></div>';
+    if(state.promise)return state.promise;
+
+    state.promise=fetch('/api/passed-candidate-analysis',{{method:'POST',headers:aiHeaders(),body:JSON.stringify({{filename:file}})}})
+    .then(function(response){{return response.json().then(function(data){{if(!response.ok)throw new Error(data.error||'Failed');return data;}});}})
+    .then(function(data){{
+        state.data=data;
+        state.promise=null;
+        renderInterviewPlan(source,data.plan);
+        btn.style.display='none';
+        return data;
+    }})
+    .catch(function(error){{
+        state.promise=null;
+        showInterviewError(output,error.message);
+        btn.disabled=false;
+        btn.textContent='Try again';
+    }});
+    return state.promise;
 }}
 
 function updateHumanDecision(container,decision){{
@@ -1574,7 +2586,7 @@ function updateAmbiguityCreditTotal(){{
     }}
     if(!loaded){{
         totalNode.textContent='No AI reviews loaded';
-        detailNode.textContent='Exact Copilot credit usage appears after ambiguous CV recommendations are generated or loaded.';
+        detailNode.textContent='Exact Copilot credit usage appears after ambiguous CV verdicts are generated or loaded.';
         return;
     }}
     totalNode.textContent=formatCreditCount(total)+' '+(total===1?'credit':'credits');
@@ -1618,19 +2630,27 @@ function renderAmbiguityVerdict(container,review){{
     output.appendChild(semanticElement(
         'div',
         'ai-verdict '+String(review.ai_verdict||'').toLowerCase(),
-        'AI recommendation: '+review.ai_verdict
+        'AI verdict: '+review.ai_verdict
     ));
     output.appendChild(semanticElement('div','semantic-summary',review.summary));
-    renderCreditUsage(container,review,output);
-    (review.evidence||[]).forEach(function(finding){{
+    if(showAiUsage)renderCreditUsage(container,review,output);
+    var recommendationReasons=Array.isArray(review.reasons)&&review.reasons.length?review.reasons:(review.evidence||[]).map(function(item){{
+        return {{criterion:item.criterion,status:item.stance==='SUPPORTS_FAIL'?'FAILED':'MET',explanation:item.explanation,source_quote:item.source_quote,confidence:item.confidence}};
+    }});
+    recommendationReasons.forEach(function(finding){{
         var card=semanticElement('div','semantic-finding','');
         var head=semanticElement('div','semantic-finding-head','');
         head.appendChild(semanticElement('div','semantic-finding-title',finding.criterion));
-        head.appendChild(semanticElement('span','semantic-classification',finding.stance.replaceAll('_',' ')));
+        head.appendChild(semanticElement('span','semantic-classification',String(finding.status||'REASON').replaceAll('_',' ')));
         card.appendChild(head);
         card.appendChild(semanticElement('div','semantic-explanation',finding.explanation));
-        card.appendChild(semanticElement('blockquote','semantic-quote',finding.source_quote));
-        card.appendChild(semanticElement('div','semantic-meta','AI confidence: '+finding.confidence+'% · quotation verified against parsed work experience'));
+        if(finding.source_quote){{
+            card.appendChild(semanticElement('blockquote','semantic-quote',finding.source_quote));
+            var confidence=Number.isFinite(Number(finding.confidence))?'AI confidence: '+finding.confidence+'% · ':'';
+            card.appendChild(semanticElement('div','semantic-meta',confidence+'quotation verified against parsed work experience'));
+        }}else{{
+            card.appendChild(semanticElement('div','semantic-meta','No citation applicable — this reason is based on an absent or numeric screening requirement.'));
+        }}
         output.appendChild(card);
     }});
     var actions=semanticElement('div','semantic-actions','');

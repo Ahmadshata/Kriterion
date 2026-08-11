@@ -6,6 +6,41 @@ All notable changes to Kriterion are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- Added an on-demand Interview Architect that identifies ambiguous evidence, strong claims,
+  career gaps, overlaps, and date conflicts, then generates one verified question and
+  Listen-for guide for each distinct issue.
+- Added a reversible `--ai-provider codex|copilot` switch, with Codex temporarily
+  selected by default for output testing and provider-aware cache invalidation.
+
+### Changed
+
+- Interview Architect and AI Profile Critic are merged into one cached passed-candidate
+  issue-and-question analysis with a single dashboard action.
+- Strong Claims now prioritizes quantified performance, reliability, delivery, cost,
+  latency, and scale assertions and probes how each number was measured, achieved,
+  tested, sustained, and attributed to the candidate.
+- AI verdict now explains pass/fail screening reasons with verified work-experience
+  citations where applicable; document-layout diagnostics remain internal and absence-based
+  failures no longer require fabricated quotations.
+- AI verdict and Interview Architect artifacts now use a
+  shared cross-run cache with context fingerprints and safe provider/schema invalidation.
+- Interview Architect is available only for deterministic passing candidates, enforced
+  in both the report and local API.
+- Company-date-title CV layouts now retain employers, Python scripting and automation
+  developer roles count as relevant experience, and unbulleted citations stop at the
+  matching responsibility instead of spanning the whole experience entry.
+- Codex review mode now suppresses GitHub AI Credit UI and stores no usage metadata;
+  Copilot mode retains the existing exact-credit display.
+- Interview Architect now covers every positive blank-month career gap across the
+  complete employment timeline and requires exactly one question per verified gap.
+- Career-history rows now display their actual calendar tenure rather than internal
+  overlap-allocation months, preventing legitimate overlapping roles from showing `0.0 yr`.
+- Profiles now support `include_freelance_experience: true|false`; excluded freelance
+  work supplies neither required-skill evidence nor experience years, and the profile
+  creation agent now asks for this choice.
+
 ## [0.4.0] - 2026-08-05
 
 ### Added
