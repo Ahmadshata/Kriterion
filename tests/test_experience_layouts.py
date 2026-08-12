@@ -2,6 +2,7 @@ import datetime as dt
 import unittest
 
 from kriterion.experience import (
+    Entry,
     _entry_role_identity,
     build_date_based_entries_from_lines,
     compute_devops_roles,
@@ -9,12 +10,30 @@ from kriterion.experience import (
     is_date_range_line,
     is_education_program,
     is_experience_entry,
+    is_freelance_entry,
 )
 
 
 class ExperienceLayoutTests(unittest.TestCase):
     def lines(self, text: str) -> list[tuple[int, str]]:
         return [(1, line) for line in text.splitlines()]
+
+    def test_freelance_detection_uses_the_entry_heading(self) -> None:
+        freelance = Entry(
+            self.lines(
+                "Freelance | Python Developer | 2018 - Present\n"
+                "Built AWS automation tools."
+            )
+        )
+        salaried = Entry(
+            self.lines(
+                "DevOps Engineer | Acme | 2022 - Present\n"
+                "Collaborated with freelance designers."
+            )
+        )
+
+        self.assertTrue(is_freelance_entry(freelance))
+        self.assertFalse(is_freelance_entry(salaried))
 
     def test_standalone_dates_above_titles_do_not_steal_previous_content(self) -> None:
         source = self.lines(
@@ -90,6 +109,49 @@ class ExperienceLayoutTests(unittest.TestCase):
         roles, _, _ = compute_devops_roles(entries)
         self.assertEqual(roles[0].title, "DevOps Engineer")
         self.assertEqual(roles[0].company, "Acme")
+
+    def test_company_date_title_layout_preserves_employers_and_python_automation(
+        self,
+    ) -> None:
+        entries = build_date_based_entries_from_lines(
+            self.lines(
+                "Qeema Company (STC Offshore)\n"
+                "Dec 2023 - Present\n"
+                "DevOps Engineer\n"
+                "Automated infrastructure with Terraform.\n"
+                "\n"
+                "Freelance\n"
+                "2018 - Present\n"
+                "Python Developer\n"
+                "Developed Python scripting and automation projects.\n"
+                "\n"
+                "Egyptian Army\n"
+                "Dec 2021 - Dec 2022\n"
+                "IT Specialist and System Developer\n"
+                "Maintained IT infrastructure."
+            )
+        )
+
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(
+            [_entry_role_identity(entry) for entry in entries],
+            [
+                ("DevOps Engineer", "Qeema Company (STC Offshore)"),
+                ("Python Developer", "Freelance"),
+                ("IT Specialist and System Developer", "Egyptian Army"),
+            ],
+        )
+
+        roles, _, ambiguity = compute_devops_roles(entries)
+        self.assertFalse(ambiguity)
+        self.assertEqual(
+            [(role.title, role.company) for role in roles],
+            [
+                ("Python Developer", "Freelance"),
+                ("IT Specialist and System Developer", "Egyptian Army"),
+                ("DevOps Engineer", "Qeema Company (STC Offshore)"),
+            ],
+        )
 
     def test_title_and_date_on_same_line_remains_supported(self) -> None:
         entries = build_date_based_entries_from_lines(
@@ -223,7 +285,9 @@ class ExperienceLayoutTests(unittest.TestCase):
                 "Code instructor | Ischool | 06/2024",
             ],
         )
-        professional_entries = [entry for entry in entries if is_experience_entry(entry)]
+        professional_entries = [
+            entry for entry in entries if is_experience_entry(entry)
+        ]
         self.assertNotIn(
             "Teaching assistant",
             [entry.head(1) for entry in professional_entries],

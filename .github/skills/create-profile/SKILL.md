@@ -13,10 +13,13 @@ Ask one or two focused questions at a time. Do not ask for values the user alrea
 
 1. Role name and minimum years of relevant experience.
 2. Two to five technologies that must be demonstrated in employment history.
-3. Optional minimum score.
-4. Training programs whose duration must not count as professional experience.
-5. Optional required programs, excluded companies, and excluded universities.
-6. Optional scoring weights; use defaults unless customization is requested.
+3. Whether freelance/self-employed work should count as employment experience.
+   Explain that `false` excludes those entries from both required-technology
+   evidence and years of experience; do not silently choose for the user.
+4. Optional minimum score.
+5. Training programs whose duration must not count as professional experience.
+6. Optional required programs, excluded companies, and excluded universities.
+7. Optional scoring weights; use defaults unless customization is requested.
 
 Explain that `must_have_in_experience` excludes skills lists, certifications, courses, projects, and education. A candidate who lists a technology outside employment history does not satisfy that requirement.
 
@@ -24,6 +27,7 @@ Explain that `must_have_in_experience` excludes skills lists, certifications, co
 
 - Output path: `./profiles/profile.yaml`
 - `min_score`: `null`
+- `include_freelance_experience`: ask the user; use `true` only when they decline to choose
 - Education programs: `iti`, `nti`, `sprints`, `depi`, `alx`, `information technology institute`, `national technology institute`, `digital egypt pioneers initiative`
 - `preferred_programs`, `excluded_companies`, `excluded_universities`: `null`
 - Scoring: `keywords_found=30`, `devops_years=30`, `recency=20`, `keyword_depth=10`, `no_ambiguity=10`
@@ -36,6 +40,8 @@ Use lowercase must-have technologies. Show the final YAML before writing it.
 role: {role_name}
 
 min_experience_years: {number}
+
+include_freelance_experience: {true_or_false}
 
 must_have_in_experience:
   - {keyword1}
@@ -73,6 +79,8 @@ Only add custom scoring weights when requested, and ensure they sum to 100.
 - Approved Kubernetes relationships include AKS, EKS, GKE, OpenShift, Rancher, and Tanzu Kubernetes Grid.
 - Demonstrated usage of a related platform can qualify deterministically; a weak related mention becomes AMBIGUOUS.
 - AI handles only unresolved ambiguity using parsed work-experience evidence. It cannot override deterministic missing requirements.
+- When `include_freelance_experience` is `false`, freelance/self-employed entries
+  supply neither experience years nor must-have technology evidence.
 
 ## Finish
 

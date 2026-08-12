@@ -100,6 +100,7 @@ def _config_fingerprint() -> str:
             "keywords": sorted(config.REQUIRED_EXPERIENCE_KEYWORDS),
             "min_years": config.MIN_DEVOPS_YEARS,
             "min_score": config.MIN_SCORE,
+            "include_freelance_experience": config.INCLUDE_FREELANCE_EXPERIENCE,
             "code": code_hex,
         },
         sort_keys=True,
