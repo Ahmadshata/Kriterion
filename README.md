@@ -157,9 +157,33 @@ The setup script installs Kriterion's agent and skills for both supported assist
 
 Running setup again refreshes only Kriterion's installed files from the canonical copies under `.github/`.
 
-### GitHub Copilot for ambiguous candidates
+### AI provider for candidate review
 
-Install the GitHub Copilot extension in VS Code for the conversational `@kriterion` experience. Install and authenticate the `copilot` CLI so Kriterion can automatically produce evidence-backed AI verdicts for ambiguous candidates.
+Kriterion currently defaults its dashboard AI calls to the authenticated Codex CLI
+for temporary testing. Codex runs non-interactively in an ephemeral, read-only
+workspace and Kriterion displays only the validated output—no credit-usage panel.
+
+```bash
+# Temporary testing default
+./kriterion.sh --ai-provider codex
+
+# Restore the original GitHub Copilot path at any time
+./kriterion.sh --ai-provider copilot
+```
+
+You can also set `KRITERION_AI_PROVIDER=codex|copilot`. GitHub Copilot mode retains
+its exact GitHub AI Credit display. A cached result from one provider is never reused
+under the other provider, so switching produces a fresh result.
+
+AI verdict and Interview Architect results are cached in
+`.kriterion_ai_cache/` at the output root and reused across date-stamped report runs.
+Cache entries are accepted only when the provider, schema, parsed work experience,
+screening context, profile, and relevant cohort context still match. `--no-cache`
+starts with fresh AI artifacts as well as fresh deterministic screening results.
+
+Install the GitHub Copilot extension in VS Code for the conversational `@kriterion`
+experience. The dashboard provider requires its corresponding authenticated `codex`
+or `copilot` CLI.
 
 ### Optional: OCR for scanned PDFs
 
@@ -177,6 +201,7 @@ Profiles define what you're looking for. Create them via Copilot (`@kriterion cr
 ```yaml
 role: Senior DevOps Engineer
 min_experience_years: 3
+include_freelance_experience: true
 
 must_have_in_experience:
   - kubernetes
@@ -200,6 +225,7 @@ min_score: null
 |-------|---------|
 | `role` | Names the output directory |
 | `min_experience_years` | Minimum relevant years to pass |
+| `include_freelance_experience` | Whether freelance/self-employed entries supply experience years and required-skill evidence |
 | `must_have_in_experience` | Keywords that must appear in experience entries (synonym-aware) |
 | `education_programs` | Programs whose time is excluded from experience count |
 | `preferred_programs` | Candidate must have attended one (null to skip) |
@@ -222,9 +248,12 @@ The report is a fully interactive single-page app:
 - Clickable CV filenames open the source PDF
 - Deterministic semantic relationships: demonstrated AKS/EKS/GKE usage can satisfy Kubernetes
 - AI Verdict appears only for ambiguous candidates and runs automatically in the served dashboard
-- AI returns a PASS/FAIL recommendation with exact, locally verified CV quotations
+- AI returns a PASS/FAIL verdict with exact, locally verified CV quotations
 - The reviewer makes the authoritative final PASS/FAIL decision
-- Static HTML remains shareable; AI Verdict requires the local served dashboard
+- Interview Architect highlights every defensible ambiguous-evidence, strong-claim,
+  career-gap, overlap, or date-conflict issue and creates exactly one question for each,
+  including what to listen for and locally verified work-experience citations
+- Static HTML remains shareable; AI features require the local served dashboard
 
 ---
 
@@ -250,13 +279,37 @@ The built-in, versioned relationship map currently covers AKS, EKS, GKE, OpenShi
 
 ### Ambiguity-only AI Verdict
 
-AI is never used to reconsider clear passes or failures. When the served dashboard opens, each ambiguous candidate is automatically sent to Copilot in sequence. Copilot receives only Kriterion's parsed work-experience entries—not skills, certifications, courses, education, or projects—and returns a conservative PASS/FAIL recommendation addressing only the unresolved criteria. Kriterion rejects out-of-scope evidence, forces FAIL when an already-deterministic requirement is missing, and verifies every quotation against the parsed work experience. The reviewer then records the authoritative final PASS or FAIL. This human decision is stored separately and does not rewrite Kriterion's original deterministic `AMBIGUOUS` result.
+AI is never used to reconsider clear passes or failures. When the served dashboard opens, each ambiguous candidate is automatically sent to the selected AI provider in sequence. The provider receives only Kriterion's parsed work-experience entries—not skills, certifications, courses, education, or projects—and returns a conservative PASS/FAIL verdict addressing only the unresolved criteria. Kriterion rejects out-of-scope evidence, forces FAIL when an already-deterministic requirement is missing, and verifies every quotation against the parsed work experience. The reviewer then records the authoritative final PASS or FAIL. This human decision is stored separately and does not rewrite Kriterion's original deterministic `AMBIGUOUS` result.
 
 Use `--no-auto-ai` when ambiguous CVs must not be transmitted automatically. The reviewer can still request each AI verdict manually from the dashboard.
+
+### Interview Architect
+
+Interview Architect is available only on passed candidates and runs when the reviewer
+clicks **Analyze issues & build questions**. The selected provider receives the parsed
+work-experience section and screening context, then returns one merged issue list in
+three groups: ambiguous evidence, strong claims, and timeline signals. Every positive
+blank-month career gap and every defensible overlap or date conflict is included. Each
+issue gets exactly one interview question, a specific **Listen for** guide, and one or
+two exact citations that Kriterion verifies locally against the parsed CV. Empty groups
+remain visible instead of inventing a concern.
+
+Strong Claims prioritizes quantified assertions such as “70% faster,” “99.9% available,”
+release-frequency changes, latency, cost, recovery time, incident reduction, and scale.
+Its question probes the baseline, metric definition, measurement source and period,
+implementation, validation or testing, sustained result, and the candidate’s personal
+attribution.
 
 ### Overlapping-safe year calculation
 
 DevOps years = unique months across all relevant roles. Concurrent roles don't double-count.
+Each career-history row displays that role's calendar tenure, so an overlapping role
+never appears as `0.0 yr` merely because another role already contributed those months
+to the unique total.
+
+Set `include_freelance_experience: false` to remove freelance and self-employed
+entries from both the overlap-safe year total and must-have technology evidence. The
+profile-creation agent asks this explicitly for every new profile.
 
 ### Education program detection
 
@@ -296,6 +349,10 @@ Or bypass both the screening manifest and saved AI-review decisions for one run:
 ## Output Structure
 
 ```
+.kriterion_ai_cache/          ← Shared, fingerprinted AI cache across dated runs
+├── semantic_reviews.json     ← AI verdicts
+└── interview_plans.json      ← Interview Architect results
+
 Senior_DevOps_Engineer_2026-07-30/
 ├── screening_report.html     ← Interactive dashboard (auto-opens)
 ├── screening_report.md       ← Markdown report
@@ -304,6 +361,7 @@ Senior_DevOps_Engineer_2026-07-30/
 ├── manifest.json             ← Incremental run cache
 ├── extracted/                ← Extracted CV text used by local AI actions
 ├── semantic_reviews.json     ← AI verdicts, verified evidence + human decisions
+├── interview_plans.json      ← Report-local Interview Architect cache
 ├── icon.png                  ← Dashboard favicon
 ├── passed_cvs/               ← Copies of passing CVs
 ├── failed_cvs/               ← Copies of failing CVs

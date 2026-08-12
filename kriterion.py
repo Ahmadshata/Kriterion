@@ -3,6 +3,7 @@
 Entry point for ``kriterion.sh`` (``python kriterion.py``).  All logic lives
 in the ``kriterion`` package.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,7 +24,6 @@ from kriterion import *  # noqa: F401,F403
 # Explicit imports for names used inside main() — avoids relying on wildcard.
 from kriterion import config
 from kriterion.cache import (
-    SEMANTIC_REVIEWS_FILENAME,
     _deserialize_result,
     _file_hash,
     _load_manifest,
@@ -102,7 +102,16 @@ def main() -> None:
     parser.add_argument(
         "--no-auto-ai",
         action="store_true",
-        help="Do not automatically send ambiguous CVs to Copilot when the dashboard opens",
+        help="Do not automatically request ambiguous AI recommendations when the dashboard opens",
+    )
+    parser.add_argument(
+        "--ai-provider",
+        choices=("codex", "copilot"),
+        default=os.environ.get("KRITERION_AI_PROVIDER", "codex").strip().lower(),
+        help=(
+            "AI CLI for recommendations and interview questions "
+            "(temporary default: codex; use copilot to restore GitHub Copilot)"
+        ),
     )
     parser.add_argument(
         "--no-cache",
@@ -125,6 +134,15 @@ def main() -> None:
             )
             print(
                 f"  Must have in experience: {', '.join(profile['must_have_in_experience'])}",  # type: ignore
+                file=sys.stderr,
+            )
+            print(
+                "  Freelance experience: "
+                + (
+                    "included"
+                    if profile.get("include_freelance_experience", True)
+                    else "excluded"
+                ),
                 file=sys.stderr,
             )
             print("", file=sys.stderr)
@@ -252,6 +270,7 @@ def main() -> None:
         cv_folder=folder,
         auto_ai_review=not args.no_auto_ai,
         profile=profile_data,
+        ai_provider=args.ai_provider,
     )
     write_excel(results, outdir / "screening_results.xlsx")
 
@@ -273,6 +292,8 @@ def main() -> None:
             heartbeat_timeout=0,
             open_browser=not args.no_open,
             cv_base=folder,
+            ai_provider=args.ai_provider,
+            use_ai_cache=not args.no_cache,
         )
     except KeyboardInterrupt:
         print("\n  Kriterion server stopped.", file=sys.stderr)

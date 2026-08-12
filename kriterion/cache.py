@@ -16,6 +16,8 @@ from kriterion.scoring import classify_bucket
 
 MANIFEST_FILENAME = "manifest.json"
 SEMANTIC_REVIEWS_FILENAME = "semantic_reviews.json"
+INTERVIEW_PLANS_FILENAME = "interview_plans.json"
+CANDIDATE_INTELLIGENCE_FILENAME = "candidate_intelligence.json"
 
 
 def _file_hash(path: Path) -> str:
@@ -132,24 +134,29 @@ def _save_manifest(manifest: Dict[str, Dict[str, object]], outdir: Path) -> None
 
 
 def _retain_semantic_reviews(outdir: Path, unchanged_filenames: Set[str]) -> None:
-    reviews_path = outdir / SEMANTIC_REVIEWS_FILENAME
-    if not reviews_path.exists():
-        return
-    try:
-        data = json.loads(reviews_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    if not isinstance(data, dict):
-        return
-    retained = {
-        filename: review
-        for filename, review in data.items()
-        if filename in unchanged_filenames
-    }
-    reviews_path.write_text(
-        json.dumps(retained, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    for filename in (
+        SEMANTIC_REVIEWS_FILENAME,
+        INTERVIEW_PLANS_FILENAME,
+        CANDIDATE_INTELLIGENCE_FILENAME,
+    ):
+        reviews_path = outdir / filename
+        if not reviews_path.exists():
+            continue
+        try:
+            data = json.loads(reviews_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        retained = {
+            candidate_filename: review
+            for candidate_filename, review in data.items()
+            if candidate_filename in unchanged_filenames
+        }
+        reviews_path.write_text(
+            json.dumps(retained, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
 
 def _remove_from_buckets(filename: str, outdir: Path) -> None:

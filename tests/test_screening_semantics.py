@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from kriterion import config
 from kriterion import scoring as kriterion_scoring
+from kriterion.config import load_profile
 from kriterion.cache import (
     SEMANTIC_REVIEWS_FILENAME,
     _deserialize_result,
@@ -18,6 +19,7 @@ from kriterion.cache import (
 from kriterion.experience import Entry, Role
 from kriterion.output import (
     _role_label,
+    _role_tenure_years,
     _tool_icon_html,
     _tool_icon_slug,
     write_html_report,
@@ -59,7 +61,9 @@ class DeterministicSemanticEvidenceTests(unittest.TestCase):
         self.assertIn("prometheus", tools)
         self.assertIn("terraform", tools)
 
-    def test_managed_kubernetes_services_merge_into_provider_and_kubernetes(self) -> None:
+    def test_managed_kubernetes_services_merge_into_provider_and_kubernetes(
+        self,
+    ) -> None:
         tools = detect_tools_in_entries(
             [
                 self.entry(
@@ -109,9 +113,7 @@ class DeterministicSemanticEvidenceTests(unittest.TestCase):
     def test_white_icon_variant_is_used_only_for_dark_mode(self) -> None:
         icon_html = _tool_icon_html("circleci")
 
-        self.assertIn(
-            'class="tool-icon-light" src="tools/circleci.png"', icon_html
-        )
+        self.assertIn('class="tool-icon-light" src="tools/circleci.png"', icon_html)
         self.assertIn(
             'class="tool-icon-dark" src="tools/circleci-white.png"', icon_html
         )
@@ -138,6 +140,91 @@ class DeterministicSemanticEvidenceTests(unittest.TestCase):
 
         self.assertEqual(_role_label(role), "DevOps Engineer @ VOIS")
 
+    def test_role_tenure_does_not_use_overlap_allocation_months(self) -> None:
+        army_role = Role(
+            title="IT Specialist",
+            start=date(2021, 12, 1),
+            end=date(2022, 12, 1),
+            months_added=0,
+        )
+        current_role = Role(
+            title="DevOps Engineer",
+            start=date(2023, 12, 1),
+            end=date(2026, 8, 1),
+            months_added=0,
+        )
+
+        self.assertEqual(_role_tenure_years(army_role), 1.0)
+        self.assertEqual(_role_tenure_years(current_role), 2.67)
+
+    def test_profile_freelance_option_defaults_true_and_requires_boolean(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "profile.yaml"
+            profile_path.write_text(
+                "role: DevOps Engineer\n"
+                "min_experience_years: 3\n"
+                "must_have_in_experience: [aws]\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(load_profile(profile_path)["include_freelance_experience"])
+
+            profile_path.write_text(
+                "role: DevOps Engineer\n"
+                "min_experience_years: 3\n"
+                "must_have_in_experience: [aws]\n"
+                "include_freelance_experience: false\n",
+                encoding="utf-8",
+            )
+            self.assertFalse(load_profile(profile_path)["include_freelance_experience"])
+
+            profile_path.write_text(
+                "role: DevOps Engineer\n"
+                "min_experience_years: 3\n"
+                "must_have_in_experience: [aws]\n"
+                "include_freelance_experience: 'false'\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "must be true or false"):
+                load_profile(profile_path)
+
+    def test_excluded_freelance_supplies_neither_years_nor_tool_evidence(self) -> None:
+        salaried = self.entry(
+            "DevOps Engineer | Acme | Jan 2022 - Dec 2024\nManaged Kubernetes clusters."
+        )
+        freelance = self.entry(
+            "Freelance | Python Developer | Jan 2018 - Present\n"
+            "Built AWS automation tools for clients."
+        )
+        pages = [salaried.text() + "\n" + freelance.text()]
+
+        with (
+            patch.object(
+                kriterion_scoring,
+                "extract_text_by_page",
+                return_value=(pages, False),
+            ),
+            patch.object(
+                kriterion_scoring,
+                "pdf_has_multi_column_layout",
+                return_value=False,
+            ),
+            patch.object(
+                kriterion_scoring,
+                "extract_experience_entries",
+                return_value=[salaried, freelance],
+            ),
+            patch.object(config, "INCLUDE_FREELANCE_EXPERIENCE", False),
+            patch.object(config, "REQUIRED_EXPERIENCE_KEYWORDS", {"aws"}),
+            patch.object(config, "MIN_DEVOPS_YEARS", 0),
+            patch.object(config, "MIN_SCORE", None),
+        ):
+            result = screen_cv(Path("candidate.pdf"))
+
+        self.assertIsNone(result["required_evidence"]["aws"])
+        self.assertNotIn("Freelance", result["_experience_text"])
+        self.assertEqual(result["experience_entries_found"], 1)
+        self.assertEqual(len(result["freelance_entries_excluded"]), 1)
+
     def test_role_company_survives_cache_and_old_entries_remain_readable(self) -> None:
         role = Role(
             title="DevOps Engineer",
@@ -146,9 +233,9 @@ class DeterministicSemanticEvidenceTests(unittest.TestCase):
             months_added=48,
             company="VOIS",
         )
-        restored = _deserialize_result(
-            _serialize_result({"devops_roles": [role]})
-        )["devops_roles"][0]
+        restored = _deserialize_result(_serialize_result({"devops_roles": [role]}))[
+            "devops_roles"
+        ][0]
         self.assertEqual(restored.company, "VOIS")
 
         legacy = _deserialize_result(
@@ -194,16 +281,15 @@ class DeterministicSemanticEvidenceTests(unittest.TestCase):
         # Also protects reports regenerated from older cached result shapes.
         result["detected_tools"] = ["gitlab", "gitlab ci"]
 
-        with tempfile.TemporaryDirectory() as directory, patch.object(
-            config, "REQUIRED_EXPERIENCE_KEYWORDS", {"gitlab ci"}
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(config, "REQUIRED_EXPERIENCE_KEYWORDS", {"gitlab ci"}),
         ):
             report_path = Path(directory) / "screening_report.html"
             write_html_report([result], report_path)
             report = report_path.read_text(encoding="utf-8")
 
-        self.assertEqual(
-            report.count('class="tool-filter-chip" data-tool="gitlab"'), 1
-        )
+        self.assertEqual(report.count('class="tool-filter-chip" data-tool="gitlab"'), 1)
         self.assertNotIn('data-tool="gitlab_ci"', report)
         self.assertIn('data-tools="gitlab"', report)
         self.assertIn('<img src="tools/gitlab.png" alt="">', report)
@@ -270,6 +356,28 @@ class DeterministicSemanticEvidenceTests(unittest.TestCase):
             "Managed container orchestration with Kubernetes, deploying and scaling\n"
             "applications, creating Helm charts, and managing services, pods, and\n"
             "networking across multiple environments.",
+        )
+
+    def test_unbulleted_wrapped_responsibilities_produce_focused_citations(
+        self,
+    ) -> None:
+        detail = _keyword_evidence_detail(
+            [
+                self.entry(
+                    "DevOps Engineer\n"
+                    "Designed CI/CD pipelines and improved delivery quality.\n"
+                    "Architected scalable AWS cloud solutions, including EC2 and S3,\n"
+                    "while implementing monitoring with Prometheus.\n"
+                    "Developed Python cleanup automation for Docker images."
+                )
+            ],
+            "aws",
+        )
+
+        self.assertEqual(
+            detail["citations"][0]["snippet"],
+            "Architected scalable AWS cloud solutions, including EC2 and S3,\n"
+            "while implementing monitoring with Prometheus.",
         )
 
     def test_evidence_stops_before_the_next_experience_section(self) -> None:
@@ -453,8 +561,9 @@ class DeterministicSemanticEvidenceTests(unittest.TestCase):
             keyword="aws",
         )
 
-        with tempfile.TemporaryDirectory() as directory, patch.object(
-            config, "REQUIRED_EXPERIENCE_KEYWORDS", {"aws"}
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(config, "REQUIRED_EXPERIENCE_KEYWORDS", {"aws"}),
         ):
             report_path = Path(directory) / "screening_report.html"
             write_html_report([result], report_path)
@@ -479,6 +588,161 @@ class DeterministicSemanticEvidenceTests(unittest.TestCase):
         self.assertIn('data-tool="aws"', report)
         self.assertIn('data-tools="aws"', report)
         self.assertNotIn("max-height:96px", report)
+
+    def test_html_evidence_xray_links_citations_to_the_original_cv_page(self) -> None:
+        result = self.screen_single_entry(
+            "Jan 2021 - Jan 2025\n"
+            "DevOps Engineer\n"
+            "Managed AWS workloads in production.\n"
+            "Reduced AWS infrastructure costs.",
+            keyword="aws",
+        )
+        result["file"] = "candidate #1.pdf"
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(config, "REQUIRED_EXPERIENCE_KEYWORDS", {"aws"}),
+        ):
+            report_path = Path(directory) / "screening_report.html"
+            write_html_report(
+                [result],
+                report_path,
+                cv_folder=Path(directory) / "cvs",
+            )
+            report = report_path.read_text(encoding="utf-8")
+
+        payload_text = report.split(
+            '<script type="application/json" id="evidenceXrayData">', 1
+        )[1].split("</script>", 1)[0]
+        payload = json.loads(payload_text)
+
+        self.assertEqual(len(payload), 2)
+        self.assertEqual(payload[0]["requirement"], "AWS")
+        self.assertEqual(payload[0]["relationship"], "direct")
+        self.assertEqual(payload[0]["page"], 1)
+        self.assertEqual(payload[0]["matchedTerm"], "aws")
+        self.assertEqual(payload[0]["sourceUrl"], "/cvs/candidate%20%231.pdf")
+        self.assertEqual(payload[0]["previewUrl"], "/xray/candidate%20%231.pdf")
+        self.assertTrue(payload[0]["previewAvailable"])
+        self.assertIn(
+            payload[0]["matchedTerm"].lower(),
+            payload[0]["snippet"].lower(),
+        )
+        self.assertIn("DevOps Engineer", payload[0]["roleContext"])
+        self.assertEqual(report.count('class="xray-open-btn"'), len(payload))
+        self.assertIn('id="evidenceXray"', report)
+        self.assertIn("function renderXrayExcerpt", report)
+
+    def test_html_career_history_is_newest_first_with_upward_motion(self) -> None:
+        result = self.screen_single_entry(
+            "Jan 2021 - Jan 2025\nDevOps Engineer\nManaged AWS workloads.",
+            keyword="aws",
+        )
+        result["devops_roles"] = [
+            Role(
+                title="Older Platform Engineer",
+                start=date(2018, 1, 1),
+                end=date(2020, 1, 1),
+                months_added=24,
+            ),
+            Role(
+                title="Newest Platform Engineer",
+                start=date(2023, 1, 1),
+                end=date(2025, 1, 1),
+                months_added=0,
+            ),
+        ]
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(config, "REQUIRED_EXPERIENCE_KEYWORDS", {"aws"}),
+        ):
+            report_path = Path(directory) / "screening_report.html"
+            write_html_report([result], report_path)
+            report = report_path.read_text(encoding="utf-8")
+
+        self.assertLess(
+            report.index("Newest Platform Engineer"),
+            report.index("Older Platform Engineer"),
+        )
+        self.assertIn("animation:exp-flow-up 4.2s linear infinite", report)
+        self.assertIn("@keyframes exp-flow-up", report)
+        self.assertNotIn("exp-flow-down", report)
+        self.assertIn("2023-01 — 2025-01 &middot; 2.0 yr tenure", report)
+        self.assertNotIn("2023-01 — 2025-01 &middot; 0.0 yr", report)
+
+    def test_html_ai_provider_switch_hides_credits_in_codex_mode(self) -> None:
+        result = self.screen_single_entry(
+            "Jan 2021 - Jan 2025\nDevOps Engineer\nAzure services: AKS and Functions."
+        )
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(config, "REQUIRED_EXPERIENCE_KEYWORDS", {"kubernetes"}),
+        ):
+            root = Path(directory)
+            codex_path = root / "codex.html"
+            copilot_path = root / "copilot.html"
+            write_html_report([result], codex_path, ai_provider="codex")
+            write_html_report([result], copilot_path, ai_provider="copilot")
+            codex_report = codex_path.read_text(encoding="utf-8")
+            copilot_report = copilot_path.read_text(encoding="utf-8")
+
+        self.assertIn('var aiProvider="codex";', codex_report)
+        self.assertIn("var showAiUsage=false;", codex_report)
+        self.assertIn(
+            'class="section-icon section-icon-codex" aria-hidden="true">CX</div>',
+            codex_report,
+        )
+        self.assertNotIn('id="aiUsageOverview"', codex_report)
+        self.assertNotIn(
+            '<img class="copilot-icon" src="GitHub-Copilot-Blink.gif"',
+            codex_report,
+        )
+
+        self.assertIn('var aiProvider="copilot";', copilot_report)
+        self.assertIn("var showAiUsage=true;", copilot_report)
+        self.assertIn('id="aiUsageOverview"', copilot_report)
+        self.assertIn(
+            '<img class="copilot-icon" src="GitHub-Copilot-Blink.gif"',
+            copilot_report,
+        )
+
+    def test_html_criterion_lab_embeds_safe_grounded_simulation_data(self) -> None:
+        result = self.screen_single_entry(
+            "Jan 2021 - Jan 2025\nDevOps Engineer\nManaged AWS workloads.",
+            keyword="aws",
+        )
+        result["file"] = "candidate</script>.pdf"
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(config, "REQUIRED_EXPERIENCE_KEYWORDS", {"aws"}),
+        ):
+            report_path = Path(directory) / "screening_report.html"
+            write_html_report(
+                [result],
+                report_path,
+                profile={
+                    "role": "DevOps Engineer",
+                    "must_have_in_experience": ["aws"],
+                    "preferred_programs": [],
+                },
+            )
+            report = report_path.read_text(encoding="utf-8")
+
+        payload_text = report.split(
+            '<script type="application/json" id="criterionLabData">', 1
+        )[1].split("</script>", 1)[0]
+        payload = json.loads(payload_text)
+
+        self.assertEqual(payload["rules"], ["aws"])
+        self.assertEqual(payload["candidates"][0]["name"], "candidate</script>.pdf")
+        self.assertEqual(payload["candidates"][0]["evidence"]["aws"], "found")
+        self.assertNotIn("candidate</script>.pdf", payload_text)
+        self.assertIn('id="criterionLab"', report)
+        self.assertIn("function criterionLabClassify", report)
+        self.assertIn("Report only", report)
 
     def test_weak_related_mention_makes_candidate_ambiguous(self) -> None:
         result = self.screen_single_entry(

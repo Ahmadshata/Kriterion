@@ -131,6 +131,51 @@ class CopilotInvocationTests(unittest.TestCase):
         self.assertEqual(usage["ai_calls"], 2)  # type: ignore[index]
         self.assertEqual(usage["ai_credits"], 2.0)  # type: ignore[index]
 
+
+class CodexInvocationTests(unittest.TestCase):
+    @patch("serve.subprocess.run")
+    @patch("serve.shutil.which", return_value="/usr/local/bin/codex")
+    def test_codex_runs_ephemerally_and_returns_output_without_usage(
+        self,
+        _which: object,
+        run: object,
+    ) -> None:
+        def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+            output_path = Path(command[command.index("--output-last-message") + 1])
+            output_path.write_text('{"status":"ok"}', encoding="utf-8")
+            self.assertEqual(kwargs["input"], "synthetic prompt")
+            return SimpleNamespace(returncode=0, stdout="ignored", stderr="")
+
+        run.side_effect = fake_run  # type: ignore[attr-defined]
+
+        response = serve.run_codex("synthetic prompt")
+
+        self.assertEqual(response, '{"status":"ok"}')
+        self.assertIsNone(response.usage)
+        command = run.call_args.args[0]  # type: ignore[attr-defined]
+        self.assertEqual(command[:2], ["/usr/local/bin/codex", "exec"])
+        self.assertIn("--ephemeral", command)
+        self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
+        self.assertEqual(command[-1], "-")
+        self.assertEqual(
+            run.call_args.kwargs["cwd"],  # type: ignore[attr-defined]
+            command[command.index("--cd") + 1],
+        )
+
+    @patch("serve.run_codex", return_value=serve.AIResponse("codex output"))
+    @patch("serve.run_copilot", return_value=serve.AIResponse("copilot output"))
+    def test_provider_dispatch_is_reversible(
+        self,
+        copilot: object,
+        codex: object,
+    ) -> None:
+        self.assertEqual(serve.run_ai("prompt", provider="codex"), "codex output")
+        self.assertEqual(serve.run_ai("prompt", provider="copilot"), "copilot output")
+        codex.assert_called_once_with("prompt", timeout=serve.DEFAULT_COPILOT_TIMEOUT)  # type: ignore[attr-defined]
+        copilot.assert_called_once_with("prompt", timeout=serve.DEFAULT_COPILOT_TIMEOUT)  # type: ignore[attr-defined]
+
+
+class CopilotUsageTests(unittest.TestCase):
     def test_exact_session_nano_ai_units_are_reported_as_credits(self) -> None:
         billing = serve._extract_copilot_session_billing(
             "\n".join(
@@ -261,6 +306,109 @@ class CopilotInvocationTests(unittest.TestCase):
         self.assertNotIn("ai_credits", usage)
         self.assertNotIn("cost_usd", usage)
 
+    def test_all_ai_artifacts_persist_to_and_load_from_shared_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_run = root / "role_2026-08-10"
+            second_run = root / "role_2026-08-11"
+            shared_cache = root / serve.AI_CACHE_DIRECTORY
+            server = SimpleNamespace(
+                outdir=first_run,
+                ai_cache_dir=shared_cache,
+                sessions={
+                    "candidate.pdf": {
+                        "semantic_review": {"ai_verdict": "PASS"},
+                        "interview_plan": {"questions": []},
+                        "candidate_intelligence": {"profile_critic": {"findings": []}},
+                    }
+                },
+            )
+
+            serve.persist_semantic_review_sessions(server)
+            sessions = serve.load_semantic_review_sessions(
+                second_run,
+                shared_cache,
+            )
+
+            self.assertEqual(
+                sessions["candidate.pdf"]["semantic_review"]["ai_verdict"],
+                "PASS",
+            )
+            self.assertEqual(
+                sessions["candidate.pdf"]["interview_plan"]["questions"],
+                [],
+            )
+            self.assertEqual(
+                sessions["candidate.pdf"]["candidate_intelligence"]["profile_critic"][
+                    "findings"
+                ],
+                [],
+            )
+            self.assertTrue(
+                all(
+                    (shared_cache / filename).is_file()
+                    for filename in (
+                        serve.SEMANTIC_REVIEWS_FILENAME,
+                        serve.INTERVIEW_PLANS_FILENAME,
+                        serve.CANDIDATE_INTELLIGENCE_FILENAME,
+                    )
+                )
+            )
+
+    def test_ai_cache_fingerprint_changes_with_candidate_profile_and_cohort(
+        self,
+    ) -> None:
+        candidate = {
+            "file": "candidate.pdf",
+            "passed": True,
+            "ambiguity": False,
+            "devops_years": 4,
+        }
+        profile = {"role": "Senior DevOps Engineer"}
+        baseline = serve._ai_context_fingerprint(
+            candidate,
+            "Managed Kubernetes.",
+            profile,
+            extra_context={"passed_candidate_count": 3},
+        )
+
+        self.assertEqual(
+            baseline,
+            serve._ai_context_fingerprint(
+                candidate,
+                "Managed Kubernetes.",
+                profile,
+                extra_context={"passed_candidate_count": 3},
+            ),
+        )
+        self.assertNotEqual(
+            baseline,
+            serve._ai_context_fingerprint(
+                candidate,
+                "Managed Kubernetes in production.",
+                profile,
+                extra_context={"passed_candidate_count": 3},
+            ),
+        )
+        self.assertNotEqual(
+            baseline,
+            serve._ai_context_fingerprint(
+                candidate,
+                "Managed Kubernetes.",
+                {"role": "Platform Engineer"},
+                extra_context={"passed_candidate_count": 3},
+            ),
+        )
+        self.assertNotEqual(
+            baseline,
+            serve._ai_context_fingerprint(
+                candidate,
+                "Managed Kubernetes.",
+                profile,
+                extra_context={"passed_candidate_count": 4},
+            ),
+        )
+
     def test_copilot_jsonl_parser_concatenates_message_deltas(self) -> None:
         stdout = "\n".join(
             [
@@ -284,6 +432,333 @@ class CopilotInvocationTests(unittest.TestCase):
         )
 
 
+class CandidateIntelligenceValidationTests(unittest.TestCase):
+    def _gap_plan(self, months: int, source_quotes: list[str]) -> str:
+        return json.dumps(
+            {
+                "summary": "Clarify the verified transition.",
+                "questions": [
+                    {
+                        "category": "CAREER_TIMELINE",
+                        "priority": "MEDIUM",
+                        "question": "Could you walk us through this transition?",
+                        "rationale": "The two dated roles contain a career gap.",
+                        "what_to_listen_for": "A clear and neutral timeline explanation.",
+                        "source_quotes": source_quotes,
+                        "timeline_signal": "GAP",
+                        "gap_months": months,
+                    }
+                ],
+            }
+        )
+
+    def test_four_month_transition_is_included_in_merged_interview_analysis(
+        self,
+    ) -> None:
+        experience = (
+            "Platform Engineer | Jan 2020 - Jan 2021\n"
+            "DevOps Engineer | Jun 2021 - Dec 2023"
+        )
+        quotes = experience.splitlines()
+
+        self.assertEqual(serve._career_gap_month_values(quotes), {4})
+        plan = serve.parse_interview_architect_response(
+            self._gap_plan(4, quotes), experience
+        )
+        self.assertEqual(plan["questions"][0]["gap_months"], 4)
+
+    def test_merged_interview_analysis_requires_one_question_for_every_gap(
+        self,
+    ) -> None:
+        experience = (
+            "Platform Engineer | Jan 2020 - Jan 2021\n"
+            "DevOps Engineer | Mar 2021 - Dec 2023"
+        )
+        raw = json.dumps({"summary": "Review the timeline.", "questions": []})
+
+        with self.assertRaisesRegex(serve.KriterionError, "exactly one question"):
+            serve.parse_interview_architect_response(raw, experience)
+
+    def test_merged_interview_analysis_validates_and_requires_each_overlap(
+        self,
+    ) -> None:
+        experience = (
+            "Platform Engineer | Jan 2020 - Dec 2022\n"
+            "DevOps Consultant | Jun 2022 - Dec 2023"
+        )
+        quotes = experience.splitlines()
+        overlap_question = {
+            "category": "CAREER_TIMELINE",
+            "priority": "MEDIUM",
+            "issue": "Two roles overlap during 2022.",
+            "question": "How were these concurrent roles structured?",
+            "rationale": "The overlapping dates need a neutral explanation.",
+            "what_to_listen_for": "Employment type, workload, and exact dates.",
+            "source_quotes": quotes,
+            "timeline_signal": "OVERLAP",
+            "gap_months": None,
+        }
+        raw = json.dumps(
+            {"summary": "Clarify the overlap.", "questions": [overlap_question]}
+        )
+
+        plan = serve.parse_interview_architect_response(raw, experience)
+        self.assertEqual(plan["questions"][0]["timeline_signal"], "OVERLAP")
+
+        with self.assertRaisesRegex(
+            serve.KriterionError, "every verified career overlap"
+        ):
+            serve.parse_interview_architect_response(
+                json.dumps({"summary": "Review the timeline.", "questions": []}),
+                experience,
+            )
+
+    def test_profile_critic_accepts_a_one_month_gap_with_low_impact(self) -> None:
+        experience = (
+            "Platform Engineer | Jan 2020 - Jan 2021\n"
+            "DevOps Engineer | Mar 2021 - Dec 2023"
+        )
+        quotes = experience.splitlines()
+        raw = json.dumps(
+            {
+                "profile_critic": {
+                    "summary": "A short transition is visible.",
+                    "findings": [
+                        {
+                            "category": "CAREER_GAP",
+                            "impact_level": "LOW",
+                            "title": "One-month transition",
+                            "explanation": "One full blank month separates the roles.",
+                            "source_quotes": quotes,
+                            "requirement": None,
+                            "gap_months": 1,
+                            "age_years": None,
+                            "target_role_months": None,
+                            "other_role_months": None,
+                        }
+                    ],
+                },
+                "differentiator": None,
+            }
+        )
+
+        result = serve.parse_candidate_intelligence_response(
+            raw,
+            experience,
+            {"passed": False, "ambiguity": False, "devops_roles": []},
+            {"role": "DevOps Engineer", "must_have_in_experience": ["aws"]},
+        )
+
+        finding = result["profile_critic"]["findings"][0]
+        self.assertEqual(finding["gap_months"], 1)
+        self.assertEqual(finding["impact_level"], "LOW")
+
+    def test_six_full_month_gap_is_accepted(self) -> None:
+        experience = (
+            "Platform Engineer | Jan 2020 - Jan 2021\n"
+            "DevOps Engineer | Aug 2021 - Dec 2023"
+        )
+        quotes = experience.splitlines()
+
+        plan = serve.parse_interview_architect_response(
+            self._gap_plan(6, quotes), experience
+        )
+
+        self.assertEqual(plan["questions"][0]["gap_months"], 6)
+        self.assertEqual(plan["questions"][0]["timeline_signal"], "GAP")
+
+    def test_intervening_employment_prevents_a_false_gap(self) -> None:
+        first = "Platform Engineer | Jan 2020 - Jan 2021"
+        bridge = "Consultant | Feb 2021 - Sep 2021"
+        last = "DevOps Engineer | Aug 2021 - Dec 2023"
+        experience = "\n".join([first, bridge, last])
+
+        with self.assertRaisesRegex(
+            serve.KriterionError, "complete employment timeline"
+        ):
+            serve.parse_interview_architect_response(
+                self._gap_plan(6, [first, last]), experience
+            )
+
+    def test_profile_critic_validates_gap_broad_claim_and_stale_tool(self) -> None:
+        experience = (
+            "Cloud Engineer | Jan 2019 - Dec 2021 | Used AWS and Helm.\n"
+            "DevOps Engineer | Jul 2022 - Dec 2023 | Managed Kubernetes cluster."
+        )
+        first, second = experience.splitlines()
+        age_years = serve._verified_stale_tool_age_years([first])
+        raw = json.dumps(
+            {
+                "profile_critic": {
+                    "summary": "The profile has continuity, specificity, and recency concerns.",
+                    "findings": [
+                        {
+                            "category": "CAREER_GAP",
+                            "impact_level": "HIGH",
+                            "title": "Six-month career gap",
+                            "explanation": "Six full blank months separate the roles.",
+                            "source_quotes": [first, second],
+                            "requirement": None,
+                            "gap_months": 6,
+                            "age_years": None,
+                        },
+                        {
+                            "category": "BROAD_CLAIM",
+                            "impact_level": "MEDIUM",
+                            "title": "Kubernetes ownership is unclear",
+                            "explanation": "The claim omits scope, scale, and outcome.",
+                            "source_quotes": [second],
+                            "requirement": None,
+                            "gap_months": None,
+                            "age_years": None,
+                        },
+                        {
+                            "category": "STALE_REQUIRED_TOOL",
+                            "impact_level": "MEDIUM",
+                            "title": "AWS evidence may need refreshing",
+                            "explanation": "The latest dated AWS evidence is several years old.",
+                            "source_quotes": [first],
+                            "requirement": "aws",
+                            "gap_months": None,
+                            "age_years": age_years,
+                        },
+                    ],
+                },
+                "differentiator": None,
+            }
+        )
+
+        result = serve.parse_candidate_intelligence_response(
+            raw,
+            experience,
+            {"passed": False, "ambiguity": False},
+            {"must_have_in_experience": ["aws", "helm", "kubernetes"]},
+        )
+
+        self.assertEqual(
+            [finding["category"] for finding in result["profile_critic"]["findings"]],
+            ["CAREER_GAP", "BROAD_CLAIM", "STALE_REQUIRED_TOOL"],
+        )
+
+    def test_profile_critic_highlights_majority_non_target_career_focus(self) -> None:
+        target_quote = "DevOps Engineer | Dec 2023 - Aug 2026"
+        other_quote = "Freelance | Python Developer | Jan 2018 - Aug 2026"
+        experience = "\n".join([target_quote, other_quote])
+        candidate = {
+            "passed": True,
+            "ambiguity": False,
+            "devops_roles": [
+                {
+                    "title": "DevOps Engineer",
+                    "start": "2023-12-01",
+                    "end": "2026-08-01",
+                    "months_added": 0,
+                },
+                {
+                    "title": "Freelance | Python Developer",
+                    "start": "2018-01-01",
+                    "end": "2026-08-01",
+                    "months_added": 104,
+                },
+            ],
+        }
+        profile = {
+            "role": "Senior DevOps Engineer",
+            "must_have_in_experience": ["aws"],
+        }
+        focus = serve._role_focus_context(candidate, profile)
+        raw = json.dumps(
+            {
+                "profile_critic": {
+                    "summary": "Most counted tenure follows a Python-development path.",
+                    "findings": [
+                        {
+                            "category": "CAREER_FOCUS_MISMATCH",
+                            "impact_level": "HIGH",
+                            "title": "Career history is primarily Python development",
+                            "explanation": "Target-role tenure is shorter than the overlapping Python-development path.",
+                            "source_quotes": [target_quote, other_quote],
+                            "requirement": None,
+                            "gap_months": None,
+                            "age_years": None,
+                            "target_role_months": focus["target_role_months"],
+                            "other_role_months": focus["other_role_months"],
+                        }
+                    ],
+                },
+                "differentiator": None,
+            }
+        )
+
+        result = serve.parse_candidate_intelligence_response(
+            raw, experience, candidate, profile
+        )
+
+        finding = result["profile_critic"]["findings"][0]
+        self.assertEqual(finding["category"], "CAREER_FOCUS_MISMATCH")
+        self.assertEqual(finding["impact_level"], "HIGH")
+        self.assertGreater(finding["other_role_months"], finding["target_role_months"])
+
+    def test_candidate_differentiator_is_rejected_for_non_pass(self) -> None:
+        experience = "Reduced deployment recovery time by 70%."
+        raw = json.dumps(
+            {
+                "profile_critic": {"summary": "No material concern.", "findings": []},
+                "differentiator": {
+                    "headline": "Strong recovery impact",
+                    "why_distinctive": "The impact is uncommon.",
+                    "strengths": [
+                        {
+                            "strength": "Measured recovery improvement",
+                            "comparison": "A concrete operational outcome.",
+                            "source_quote": experience,
+                        }
+                    ],
+                },
+            }
+        )
+
+        with self.assertRaisesRegex(
+            serve.KriterionError, "only for deterministic passes"
+        ):
+            serve.parse_candidate_intelligence_response(
+                raw,
+                experience,
+                {"passed": False, "ambiguity": False},
+                {"must_have_in_experience": ["aws"]},
+            )
+
+    def test_candidate_differentiator_accepts_verified_strength_for_pass(self) -> None:
+        experience = "Reduced deployment recovery time by 70%."
+        raw = json.dumps(
+            {
+                "profile_critic": {"summary": "No material concern.", "findings": []},
+                "differentiator": {
+                    "headline": "Measured recovery impact",
+                    "why_distinctive": "The evidence states a concrete operational result.",
+                    "strengths": [
+                        {
+                            "strength": "Recovery time improvement",
+                            "comparison": "A quantified reliability result is materially specific.",
+                            "source_quote": experience,
+                        }
+                    ],
+                },
+            }
+        )
+
+        result = serve.parse_candidate_intelligence_response(
+            raw,
+            experience,
+            {"passed": True, "ambiguity": False},
+            {"must_have_in_experience": ["aws"]},
+        )
+
+        self.assertEqual(
+            result["differentiator"]["headline"], "Measured recovery impact"
+        )
+
+
 class KriterionServerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
@@ -294,9 +769,7 @@ class KriterionServerTests(unittest.TestCase):
         )
         (self.outdir / "tools").mkdir()
         (self.outdir / "tools" / "aws.png").write_bytes(b"test-png")
-        (self.outdir / "tools" / "githubactions.png").write_bytes(
-            b"github-actions-png"
-        )
+        (self.outdir / "tools" / "githubactions.png").write_bytes(b"github-actions-png")
         (self.outdir / "GitHub-Copilot-Blink.gif").write_bytes(b"test-gif")
         (self.outdir / "extracted").mkdir()
         (self.outdir / "extracted" / "candidate.pdf.txt").write_text(
@@ -404,6 +877,18 @@ class KriterionServerTests(unittest.TestCase):
             finally:
                 exc.close()
 
+    def set_candidate_status(self, *, passed: bool, ambiguity: bool) -> None:
+        self.candidate["passed"] = passed
+        self.candidate["ambiguity"] = ambiguity
+        manifest = {
+            "candidate.pdf": {"sha256": "test", "result": self.candidate},
+            "__config__": "test",
+        }
+        (self.outdir / "manifest.json").write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+        )
+
     def test_health_heartbeat_and_auth(self) -> None:
         self.assertEqual(self.request("/health"), (200, {"ok": True}))
         self.assertEqual(self.request("/heartbeat")[0], 401)
@@ -442,6 +927,32 @@ class KriterionServerTests(unittest.TestCase):
             self.assertEqual(response.headers.get_content_type(), "image/gif")
             self.assertEqual(response.read(), b"test-gif")
 
+    def test_evidence_xray_renders_highlighted_original_pdf_page(self) -> None:
+        import fitz
+
+        cv_dir = self.outdir / "source-cvs"
+        cv_dir.mkdir()
+        document = fitz.open()
+        page = document.new_page()
+        page.insert_text((72, 72), "Managed AWS workloads in production")
+        document.save(cv_dir / "candidate.pdf")
+        document.close()
+        self.server.cv_base = cv_dir.resolve()
+
+        with urllib.request.urlopen(
+            self.base_url + "/xray/candidate.pdf?page=1&term=AWS", timeout=2
+        ) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers.get_content_type(), "image/png")
+            self.assertEqual(response.headers["X-Kriterion-Evidence-Matches"], "1")
+            self.assertTrue(response.read().startswith(b"\x89PNG\r\n\x1a\n"))
+
+        with urllib.request.urlopen(self.base_url + "/report", timeout=2) as response:
+            self.assertIn(
+                "frame-ancestors 'none'",
+                response.headers["Content-Security-Policy"],
+            )
+
     def test_ai_verdict_uses_nested_result_and_requires_human_final_decision(
         self,
     ) -> None:
@@ -450,24 +961,26 @@ class KriterionServerTests(unittest.TestCase):
         def fake_copilot(prompt: str, **_: object) -> str:
             prompts.append(prompt)
             return serve.CopilotResponse(
-                json.dumps({
-                    "ai_verdict": "PASS",
-                    "summary": "The cited AKS operation resolves the Kubernetes ambiguity.",
-                    "evidence": [
-                        {
-                            "criterion": "kubernetes",
-                            "stance": "SUPPORTS_PASS",
-                            "source_quote": (
-                                "Operated Azure Kubernetes Service clusters "
-                                "for production workloads."
-                            ),
-                            "explanation": (
-                                "The candidate operated a managed Kubernetes service."
-                            ),
-                            "confidence": 96,
-                        }
-                    ],
-                }),
+                json.dumps(
+                    {
+                        "ai_verdict": "PASS",
+                        "summary": "The cited AKS operation resolves the Kubernetes ambiguity.",
+                        "evidence": [
+                            {
+                                "criterion": "kubernetes",
+                                "stance": "SUPPORTS_PASS",
+                                "source_quote": (
+                                    "Operated Azure Kubernetes Service clusters "
+                                    "for production workloads."
+                                ),
+                                "explanation": (
+                                    "The candidate operated a managed Kubernetes service."
+                                ),
+                                "confidence": 96,
+                            }
+                        ],
+                    }
+                ),
                 {
                     "available": True,
                     "input_tokens": 950,
@@ -529,6 +1042,322 @@ class KriterionServerTests(unittest.TestCase):
                 "PASS",
             )
             self.assertEqual(len(prompts), 1)
+
+    def test_codex_provider_generates_output_without_credit_usage(self) -> None:
+        self.server.ai_provider = "codex"
+        raw = serve.AIResponse(
+            json.dumps(
+                {
+                    "ai_verdict": "PASS",
+                    "summary": "The cited operation resolves the ambiguity.",
+                    "evidence": [
+                        {
+                            "criterion": "kubernetes",
+                            "stance": "SUPPORTS_PASS",
+                            "source_quote": (
+                                "Operated Azure Kubernetes Service clusters "
+                                "for production workloads."
+                            ),
+                            "explanation": "The candidate operated managed Kubernetes.",
+                            "confidence": 94,
+                        }
+                    ],
+                }
+            )
+        )
+
+        with (
+            patch("serve.run_codex", return_value=raw) as codex,
+            patch("serve.run_copilot") as copilot,
+        ):
+            status, payload = self.request(
+                "/api/ai-verdict",
+                payload={"filename": "candidate.pdf"},
+                token=self.token,
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["review"]["provider"], "codex")
+        self.assertEqual(
+            payload["review"]["token_usage"],
+            {"available": False, "attempts": 1},
+        )
+        codex.assert_called_once()
+        copilot.assert_not_called()
+
+    def test_interview_architect_generates_evidence_backed_question_categories(
+        self,
+    ) -> None:
+        self.set_candidate_status(passed=True, ambiguity=False)
+        prompts: list[str] = []
+
+        def fake_copilot(prompt: str, **_: object) -> str:
+            prompts.append(prompt)
+            return serve.CopilotResponse(
+                json.dumps(
+                    {
+                        "summary": "Verify scope, depth, and the employment timeline.",
+                        "questions": [
+                            {
+                                "category": "AMBIGUOUS_EXPERIENCE",
+                                "priority": "HIGH",
+                                "question": "What did you personally own in the AKS work?",
+                                "rationale": "The managed-service evidence needs verification.",
+                                "what_to_listen_for": "Specific production responsibilities.",
+                                "source_quotes": [
+                                    "Operated Azure Kubernetes Service clusters for production workloads."
+                                ],
+                            },
+                            {
+                                "category": "STRONG_CLAIM",
+                                "priority": "MEDIUM",
+                                "question": "What was the hardest production failure you handled?",
+                                "rationale": "Production operation is a broad claim.",
+                                "what_to_listen_for": "Constraints, diagnosis, and outcome.",
+                                "source_quotes": [
+                                    "Operated Azure Kubernetes Service clusters for production workloads."
+                                ],
+                            },
+                            {
+                                "category": "CAREER_TIMELINE",
+                                "priority": "MEDIUM",
+                                "question": "How did this work fit into your role timeline?",
+                                "rationale": "The screening context marks dates for review.",
+                                "what_to_listen_for": "Clear start, end, and transition dates.",
+                                "source_quotes": [
+                                    "Operated Azure Kubernetes Service clusters for production workloads."
+                                ],
+                                "timeline_signal": "DATE_CONFLICT",
+                                "gap_months": None,
+                            },
+                        ],
+                    }
+                ),
+                {
+                    "available": True,
+                    "input_tokens": 800,
+                    "output_tokens": 180,
+                    "total_tokens": 980,
+                    "ai_calls": 1,
+                    "models": ["gpt-test"],
+                    "ai_credits": 1.8,
+                    "cost_usd": 0.018,
+                },
+            )
+
+        with patch("serve.run_copilot", side_effect=fake_copilot):
+            status, payload = self.request(
+                "/api/interview-architect",
+                payload={"filename": "candidate.pdf"},
+                token=self.token,
+            )
+            self.assertEqual(status, 200)
+            plan = payload["plan"]
+            self.assertEqual(len(plan["questions"]), 3)
+            self.assertEqual(
+                {question["category"] for question in plan["questions"]},
+                serve.INTERVIEW_CATEGORIES,
+            )
+            self.assertEqual(plan["token_usage"]["ai_credits"], 1.8)
+            self.assertIn("AMBIGUOUS_EXPERIENCE", prompts[0])
+            self.assertIn("STRONG_CLAIM", prompts[0])
+            self.assertIn("A claim such as '70% faster'", prompts[0])
+            self.assertIn("A claim such as '99.9% availability'", prompts[0])
+            self.assertIn("source-of-truth data", prompts[0])
+            self.assertIn("repeatable or sustained", prompts[0])
+            self.assertIn("CAREER_TIMELINE", prompts[0])
+            self.assertIn("Never invent a concern", prompts[0])
+
+            cached_status, cached_payload = self.request(
+                "/api/interview-architect",
+                payload={"filename": "candidate.pdf"},
+                token=self.token,
+            )
+            self.assertEqual(cached_status, 200)
+            self.assertTrue(cached_payload["cached"])
+            self.assertEqual(len(prompts), 1)
+
+        persisted = json.loads(
+            (self.outdir / serve.INTERVIEW_PLANS_FILENAME).read_text()
+        )
+        self.assertEqual(
+            persisted["candidate.pdf"]["questions"][0]["category"],
+            "AMBIGUOUS_EXPERIENCE",
+        )
+
+    def test_interview_architect_rejects_an_unverified_evidence_anchor(self) -> None:
+        raw = json.dumps(
+            {
+                "summary": "Probe one claim.",
+                "questions": [
+                    {
+                        "category": "STRONG_CLAIM",
+                        "priority": "HIGH",
+                        "question": "How did you achieve that result?",
+                        "rationale": "The result is unusually strong.",
+                        "what_to_listen_for": "A measurable personal contribution.",
+                        "source_quotes": ["Reduced cloud cost by 90%."],
+                    }
+                ],
+            }
+        )
+        with self.assertRaisesRegex(serve.KriterionError, "could not be verified"):
+            serve.parse_interview_architect_response(
+                raw,
+                "Operated Azure Kubernetes Service clusters.",
+            )
+
+    def test_candidate_intelligence_is_evidence_backed_cached_and_persisted(
+        self,
+    ) -> None:
+        self.set_candidate_status(passed=True, ambiguity=False)
+        prompts: list[str] = []
+
+        def fake_copilot(prompt: str, **_: object) -> serve.CopilotResponse:
+            prompts.append(prompt)
+            return serve.CopilotResponse(
+                json.dumps(
+                    {
+                        "profile_critic": {
+                            "summary": "One claim would benefit from more specificity.",
+                            "findings": [
+                                {
+                                    "category": "BROAD_CLAIM",
+                                    "impact_level": "MEDIUM",
+                                    "title": "Operational scope is unclear",
+                                    "explanation": "The scale and personal ownership are not quantified.",
+                                    "source_quotes": [
+                                        "Operated Azure Kubernetes Service clusters for production workloads."
+                                    ],
+                                    "requirement": None,
+                                    "gap_months": None,
+                                    "age_years": None,
+                                }
+                            ],
+                        },
+                        "differentiator": None,
+                    }
+                ),
+                {
+                    "available": True,
+                    "input_tokens": 700,
+                    "output_tokens": 150,
+                    "total_tokens": 850,
+                    "ai_calls": 1,
+                    "models": ["gpt-test"],
+                    "ai_credits": 1.5,
+                    "cost_usd": 0.015,
+                },
+            )
+
+        with patch("serve.run_copilot", side_effect=fake_copilot):
+            status, payload = self.request(
+                "/api/candidate-intelligence",
+                payload={"filename": "candidate.pdf"},
+                token=self.token,
+            )
+            cached_status, cached_payload = self.request(
+                "/api/candidate-intelligence",
+                payload={"filename": "candidate.pdf"},
+                token=self.token,
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(cached_status, 200)
+        self.assertTrue(cached_payload["cached"])
+        self.assertIsNone(payload["intelligence"]["differentiator"])
+        self.assertEqual(
+            payload["intelligence"]["profile_critic"]["findings"][0]["category"],
+            "BROAD_CLAIM",
+        )
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("report EVERY positive blank-month gap", prompts[0])
+        self.assertIn("CAREER_FOCUS_MISMATCH", prompts[0])
+        self.assertIn("'managed Kubernetes cluster' is broad", prompts[0])
+        self.assertIn("CANDIDATE DIFFERENTIATOR", prompts[0])
+        persisted = json.loads(
+            (self.outdir / serve.CANDIDATE_INTELLIGENCE_FILENAME).read_text()
+        )
+        self.assertEqual(persisted["candidate.pdf"]["provider"], "copilot")
+
+    def test_passed_candidate_analysis_generates_and_caches_merged_plan_in_one_call(
+        self,
+    ) -> None:
+        self.set_candidate_status(passed=True, ambiguity=False)
+        prompts: list[str] = []
+
+        def fake_copilot(prompt: str, **_: object) -> serve.CopilotResponse:
+            prompts.append(prompt)
+            return serve.CopilotResponse(
+                json.dumps(
+                    {
+                        "summary": "Probe production ownership.",
+                        "questions": [
+                            {
+                                "category": "STRONG_CLAIM",
+                                "priority": "MEDIUM",
+                                "issue": "The operational claim is broad.",
+                                "question": "What production decisions did you own?",
+                                "rationale": "Ownership and outcomes need verification.",
+                                "what_to_listen_for": "Specific decisions and outcomes.",
+                                "source_quotes": [
+                                    "Operated Azure Kubernetes Service clusters for production workloads."
+                                ],
+                                "timeline_signal": None,
+                                "gap_months": None,
+                            }
+                        ],
+                    }
+                ),
+                {
+                    "available": True,
+                    "input_tokens": 900,
+                    "output_tokens": 220,
+                    "total_tokens": 1120,
+                    "ai_calls": 1,
+                    "models": ["gpt-test"],
+                    "ai_credits": 2.1,
+                    "cost_usd": 0.021,
+                },
+            )
+
+        with patch("serve.run_copilot", side_effect=fake_copilot):
+            status, payload = self.request(
+                "/api/passed-candidate-analysis",
+                payload={"filename": "candidate.pdf"},
+                token=self.token,
+            )
+            cached_status, cached_payload = self.request(
+                "/api/passed-candidate-analysis",
+                payload={"filename": "candidate.pdf"},
+                token=self.token,
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(cached_status, 200)
+        self.assertTrue(cached_payload["cached"])
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(prompts[0].count("BEGIN UNTRUSTED PARSED WORK EXPERIENCE"), 1)
+        self.assertIn("exactly one question for every detected issue", prompts[0])
+        self.assertNotIn('"candidate_intelligence"', prompts[0])
+        self.assertEqual(payload["plan"]["token_usage"]["ai_calls"], 1)
+        self.assertNotIn("intelligence", payload)
+        self.assertTrue((self.outdir / serve.INTERVIEW_PLANS_FILENAME).is_file())
+
+    def test_interview_and_profile_tools_reject_non_passed_candidates(self) -> None:
+        for path, expected_error in (
+            ("/api/interview-architect", "Interview Architect"),
+            ("/api/candidate-intelligence", "AI Profile Critic"),
+            ("/api/passed-candidate-analysis", "Passed-candidate analysis"),
+        ):
+            status, payload = self.request(
+                path,
+                payload={"filename": "candidate.pdf"},
+                token=self.token,
+            )
+            self.assertEqual(status, 400)
+            self.assertIn(expected_error, payload["error"])
+            self.assertIn("only for passed candidates", payload["error"])
 
     def test_ai_verdict_rejects_unverifiable_ai_quote(self) -> None:
         raw = json.dumps(
@@ -855,7 +1684,9 @@ class KriterionServerTests(unittest.TestCase):
                 self.profile,
             )
 
-    def test_layout_ambiguity_is_sent_to_ai_as_a_verified_target(self) -> None:
+    def test_layout_trigger_produces_screening_reasons_not_document_criticism(
+        self,
+    ) -> None:
         candidate = json.loads(json.dumps(self.candidate))
         candidate["semantic_ambiguity"] = False
         candidate["layout_ambiguity"] = True
@@ -874,13 +1705,13 @@ class KriterionServerTests(unittest.TestCase):
         raw = json.dumps(
             {
                 "ai_verdict": "FAIL",
-                "summary": "The crossed columns prevent a reliable employment timeline.",
+                "summary": "The required relevant tenure is not established.",
                 "evidence": [
                     {
-                        "criterion": "CV extraction layout",
+                        "criterion": "minimum relevant experience",
                         "stance": "SUPPORTS_FAIL",
                         "source_quote": "DevOps Engineer\nAug 2023 - Present\nTeacher Assistant",
-                        "explanation": "Two role titles are interleaved around one date.",
+                        "explanation": "The passage does not establish three years in a qualifying role.",
                         "confidence": 98,
                     }
                 ],
@@ -899,8 +1730,87 @@ class KriterionServerTests(unittest.TestCase):
             self.profile,
         )
 
-        self.assertIn('"layout_ambiguity": true', prompt)
-        self.assertIn("crossed columns", prompt)
+        self.assertIn('"full_criteria_review_required": true', prompt)
+        self.assertNotIn('"layout_ambiguity"', prompt)
+        self.assertNotIn("crossed columns", prompt)
+        self.assertEqual(review["reasons"][0]["status"], "FAILED")
+        self.assertEqual(
+            review["reasons"][0]["criterion"],
+            "minimum relevant experience",
+        )
+        self.assertIn("DevOps Engineer", review["reasons"][0]["source_quote"])
+
+    def test_layout_diagnostic_language_is_rejected_from_recommendation(self) -> None:
+        candidate = json.loads(json.dumps(self.candidate))
+        candidate["semantic_ambiguity"] = False
+        candidate["layout_ambiguity"] = True
+        candidate["required_evidence_details"] = {}
+        raw = json.dumps(
+            {
+                "ai_verdict": "FAIL",
+                "summary": "The CV has a confusing multi-column layout.",
+                "evidence": [
+                    {
+                        "criterion": "minimum relevant experience",
+                        "stance": "SUPPORTS_FAIL",
+                        "source_quote": "DevOps Engineer\nAug 2023 - Present",
+                        "explanation": "The extraction reading order is unreliable.",
+                        "confidence": 90,
+                    }
+                ],
+            }
+        )
+        review = serve.parse_ambiguity_verdict_response(
+            raw,
+            "DevOps Engineer\nAug 2023 - Present",
+        )
+
+        with self.assertRaisesRegex(serve.KriterionError, "screening criteria"):
+            serve.KriterionHandler._validate_ambiguity_coverage(
+                candidate,
+                review,
+                self.profile,
+            )
+
+    def test_deterministic_failure_reason_does_not_require_a_fake_citation(
+        self,
+    ) -> None:
+        candidate = json.loads(json.dumps(self.candidate))
+        candidate["required_evidence"]["aws"] = None
+        candidate["required_evidence_details"]["aws"] = {
+            "status": "NOT_FOUND",
+            "needs_review": False,
+        }
+        raw = json.dumps(
+            {
+                "ai_verdict": "FAIL",
+                "summary": "A required technology is absent from work experience.",
+                "evidence": [
+                    {
+                        "criterion": "kubernetes",
+                        "stance": "SUPPORTS_PASS",
+                        "source_quote": "Operated Azure Kubernetes Service clusters.",
+                        "explanation": "The related Kubernetes ambiguity resolves favorably.",
+                        "confidence": 92,
+                    }
+                ],
+            }
+        )
+        review = serve.parse_ambiguity_verdict_response(
+            raw,
+            "Operated Azure Kubernetes Service clusters.",
+        )
+
+        serve.KriterionHandler._validate_ambiguity_coverage(
+            candidate,
+            review,
+            self.profile,
+        )
+
+        self.assertEqual(len(review["reasons"]), 1)
+        self.assertEqual(review["reasons"][0]["criterion"], "Required technologies")
+        self.assertIn("aws", review["reasons"][0]["explanation"])
+        self.assertIsNone(review["reasons"][0]["source_quote"])
 
     def test_unknown_candidate_and_extracted_route_are_rejected(self) -> None:
         status, _ = self.request(

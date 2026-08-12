@@ -23,6 +23,7 @@ Path options:
 Common forwarded options:
   --no-open            Do not open the dashboard automatically
   --no-auto-ai         Do not request ambiguous AI recommendations automatically
+  --ai-provider NAME   AI backend: codex (temporary default) or copilot
   --no-cache           Rescreen every CV and discard saved AI reviews
   --min-devops-years N Override the profile's minimum experience
   --required-keyword K Override required experience keywords (repeatable)
